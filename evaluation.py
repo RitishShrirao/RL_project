@@ -77,11 +77,11 @@ class SuccessRatePolicyEvaluator:
             'successes': successes,
             'failures': failures
         }
-        if self.save_sols:
-            results['solutions'] = saved_sols
-            if isinstance(self.save_sols, str):
-                with open(self.save_sols, 'wb') as f:
-                    pickle.dump(results, f)
+        # if self.save_sols:
+        #     results['solutions'] = saved_sols
+        #     if isinstance(self.save_sols, str):
+        #         with open(self.save_sols, 'wb') as f:
+        #             pickle.dump(results, f)
         return results
 
 
@@ -211,43 +211,43 @@ class EnvironmentWithEvaluationProxy:
         results['problems_seen'] = self.n_new_problems
         results['cumulative_reward'] = self.cumulative_reward
 
-        wandb.log({'success_rate': results['success_rate'],
-                   'problems_seen': results['problems_seen'],
-                   'n_environment_steps': results['n_steps'],
-                   'cumulative_reward': results['cumulative_reward'],
-                   'max_solution_length': results['max_solution_length'],
-                   'mean_solution_length': results['mean_solution_length']
-                   })
+        # wandb.log({'success_rate': results['success_rate'],
+        #            'problems_seen': results['problems_seen'],
+        #            'n_environment_steps': results['n_steps'],
+        #            'cumulative_reward': results['cumulative_reward'],
+        #            'max_solution_length': results['max_solution_length'],
+        #            'mean_solution_length': results['mean_solution_length']
+        #            })
 
         print(util.now(), f'Success rate ({name}-{domain}-run{self.run_index}):',
                 results['success_rate'], '\tMax length:', results['max_solution_length'], '\tMean length:', results['mean_solution_length'])
 
-        try:
-            with open(self.results_path, 'rb') as f:
-                existing_results = pickle.load(f)
-        except Exception as e:
-            print(f'Starting new results log at {self.results_path} ({e})')
-            existing_results = []
+        # try:
+        #     with open(self.results_path, 'rb') as f:
+        #         existing_results = pickle.load(f)
+        # except Exception as e:
+        #     print(f'Starting new results log at {self.results_path} ({e})')
+        #     existing_results = []
 
-        existing_results.append(results)
+        # existing_results.append(results)
 
-        with open(self.results_path, 'wb') as f:
-            pickle.dump(existing_results, f)
+        # with open(self.results_path, 'wb') as f:
+        #     pickle.dump(existing_results, f)
 
-        print("Saving Q-function...")
-        torch.save(self.agent.q_function,
-                   os.path.join(self.checkpoint_dir,
-                                f'{self.n_checkpoints}.pt' if self.subrun_index is None
-                                else f'{self.subrun_index}-{self.n_checkpoints}.pt'))
-        print("Saving Q-function completed.")
+        # print("Saving Q-function...")
+        # torch.save(self.agent.q_function,
+        #            os.path.join(self.checkpoint_dir,
+        #                         f'{self.n_checkpoints}.pt' if self.subrun_index is None
+        #                         else f'{self.subrun_index}-{self.n_checkpoints}.pt'))
+        # print("Saving Q-function completed.")
 
-        self.n_checkpoints += 1
+        # self.n_checkpoints += 1
 
-        print("Saving checkpoint...")
-        torch.save(self,
-                   os.path.join(self.checkpoint_dir,
-                                'training-state.pt'))
-        print("Saving checkpoint completed.")
+        # print("Saving checkpoint...")
+        # torch.save(self,
+        #            os.path.join(self.checkpoint_dir,
+        #                         'training-state.pt'))
+        # print("Saving checkpoint completed.")
 
         if not final and (self.success_thres is not None and results['success_rate'] >= self.success_thres):
             raise EndOfLearning()

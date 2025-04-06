@@ -1092,7 +1092,7 @@ def run_batch_experiment(config, range_to_run):
                         environments.append(environment_process)
 
                         # Wait for environment to be ready.
-                        time.sleep(30)
+                        time.sleep(0)
 
                     run_config = {
                         'experiment_id': experiment_id,

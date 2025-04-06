@@ -32,3 +32,4 @@ wandb/
 
 commoncore/target
 lightning_logs/
+commoncore/Cargo.lock

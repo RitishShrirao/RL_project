@@ -45,7 +45,7 @@ class QFunction(nn.Module):
                 break
 
             # cur = time.time()
-            rewards, s_actions = zip(*environment.step(beam, debug=debug))
+            rewards, s_actions = zip(*environment.step(beam))
             # print("STEPPING TOOK", time.time() - cur)
             actions = [a for s_a in s_actions for a in s_a]
 
