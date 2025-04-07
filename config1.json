@@ -1,0 +1,53 @@
+{
+    "experiment_id": "test",
+    "domains": ["equations-ct"],
+    "environment_backend": "Racket",
+    "environment_url": "127.0.0.1:9877",
+    "domain": "equations-ct",
+    "wandb_project": "ConPoLe",
+    "gpus": [0],
+    "n_runs": 1,
+    "agents": [
+        {
+        "type": "NCE",
+        "name": "ConPoLe",
+        "n_future_states": 1,
+        "replay_buffer_size": 100000,
+        "max_depth": 30,
+        "beam_size": 10,
+        "initial_depth": 8,
+        "depth_step": 1,
+        "optimize_every": 16,
+        "n_gradient_steps": 128,
+        "keep_optimizer": true,
+        "step_every": 10000,
+        "n_bootstrap_problems": 100,
+        "batch_size": 64,
+        
+        "use_global_buffer": false,
+        "global_buffer_size": 1000000,
+        "use_embedding_based_sampling": false,
+        "num_candidate_negatives": 1000,
+        "num_final_negatives": 128,
+        "similarity_to_current": false,
+        
+        "q_function": {
+            "type": "Bilinear",
+            "char_emb_dim": 64,
+            "hidden_dim": 256,
+            "mlp": true,
+            "lstm_layers": 2
+        }
+        }
+    ],
+    "eval_environment": {
+        "evaluate_every": 100000,
+        "eval_config": {
+        "max_steps": 30,
+        "n_problems": 200
+        },
+        "output_root": "output",
+        "max_steps": 1000000,
+        "print_every": 10000
+    }
+}
