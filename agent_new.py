@@ -17,11 +17,13 @@ import subprocess
 import logging
 import numpy as np
 
+import gc
+
 import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.distributions.categorical import Categorical
-# import wandb
+import wandb
 
 import util
 from util import register
@@ -473,6 +475,9 @@ class NCE(LearningAgent):
             loss.backward()
             self.optimizer.step()
 
+        gc.collect()
+        torch.cuda.empty_cache()
+
         return losses
     
 @register(LearningAgent)
@@ -704,6 +709,9 @@ class BeamSearchIterativeDeepening(LearningAgent):
 
         self.bootstrapping = False
 
+        gc.collect()
+        torch.cuda.empty_cache()
+
 
 # A tuple of the replay buffer. We don't need to store the current state or the next state
 # because a0 is an Action object, which already has a0.state and a0.next_state.
@@ -801,6 +809,9 @@ class QLearning(LearningAgent):
         loss.backward()
         self.optimizer.step()
 
+        gc.collect()
+        torch.cuda.empty_cache()
+
 
 @register(LearningAgent)
 class AutodidaticIteration(LearningAgent):
@@ -871,6 +882,9 @@ class AutodidaticIteration(LearningAgent):
             # wandb.log({'train_loss': loss.item()})
             self.optimizer.step()
 
+        gc.collect()
+        torch.cuda.empty_cache()
+
 
 @register(LearningAgent)
 class DAVI(LearningAgent):
@@ -940,6 +954,9 @@ class DAVI(LearningAgent):
             loss.backward()
             # wandb.log({'train_loss': loss.item()})
             self.optimizer.step()
+
+        gc.collect()
+        torch.cuda.empty_cache()
 
 @register(LearningAgent)
 class BehavioralCloning(LearningAgent):
@@ -1017,12 +1034,12 @@ def run_agent_experiment(config, device, resume):
     run_id = "{}-{}-{}{}".format(experiment_id, agent_name, domain, run_index)
 
     # wandb.init(id=run_id,
-            #    name=run_id,
-            #    config=config,
-            #    entity='conpole2',
-            #    project=config.get('wandb_project', 'test'),
-            #    reinit=True,
-            #    resume=resume)
+    #            name=run_id,
+    #            config=config,
+    #            entity='ritishtest1',
+    #            project=config.get('wandb_project', 'test'),
+    #            reinit=True,
+    #            resume=resume)
 
     env = Environment.from_config(config)
     q_fn = QFunction.new(config['agent']['q_function'], device)
@@ -1044,12 +1061,12 @@ def learn_abstract(config, device, resume):
     run_id = "{}-{}-{}{}".format(experiment_id, agent_name, domain, run_index)
 
     # wandb.init(id=run_id,
-            #    name=run_id,
-            #    config=config,
-            #    entity='conpole2',
-            #    project=config.get('wandb_project', 'test'),
-            #    reinit=True,
-            #    resume=resume)
+    #            name=run_id,
+    #            config=config,
+    #            entity='ritishtest1',
+    #            project=config.get('wandb_project', 'test'),
+    #            reinit=True,
+    #            resume=resume)
 
     restart_count = False
     subrun_index = 0
@@ -1239,7 +1256,7 @@ def run_batch_experiment(config, range_to_run):
                     print('Running agent with config', json.dumps(run_config))
 
                     agent_process = subprocess.Popen(
-                        ['python3', 'agent.py', f'--{command}', '--config', json.dumps(run_config)]
+                        ['python3', 'agent_new.py', f'--{command}', '--config', json.dumps(run_config)]
                         + (['--gpu', str(gpus[agent_index % len(gpus)])] if gpus else []),
                         stderr=subprocess.DEVNULL)
                     run_processes.append(agent_process)

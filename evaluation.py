@@ -93,6 +93,7 @@ class EnvironmentWithEvaluationProxy:
     '''Wrapper around the environment that triggers an evaluation every K calls'''
     def __init__(self, experiment_id: str, run_index: int, agent_name: str, domain: str,
             agent, environment: Environment, config: dict = {}, subrun_index=None, try_load_ckpt=True):
+        self.config = config
 
         self.experiment_id = experiment_id
         self.run_index = run_index
@@ -134,37 +135,84 @@ class EnvironmentWithEvaluationProxy:
         if os.path.exists(checkpoint_path):
             print('Training checkpoint exists - restoring...')
             device = self.agent.q_function.device
-            previous_state = torch.load(checkpoint_path, map_location=device)
-            # for fixing abstraction bug
-            # temp_config = {
-            #         'environment_backend': 'Rust',
-            #         'abstractions': {
-            #             'abs_ax': [AxSeqTreeRelPos("refl"), AxSeqTreeRelPos("comm"), AxSeqTreeRelPos("assoc"), AxSeqTreeRelPos("dist"), AxSeqTreeRelPos("sub_comm"), AxSeqTreeRelPos("eval"), AxSeqTreeRelPos("add0"), AxSeqTreeRelPos("sub0"), AxSeqTreeRelPos("mul1"), AxSeqTreeRelPos("div1"), AxSeqTreeRelPos("div_self"), AxSeqTreeRelPos("sub_self"), AxSeqTreeRelPos("subsub"), AxSeqTreeRelPos("mul0"), AxSeqTreeRelPos("zero_div"), AxSeqTreeRelPos("add"), AxSeqTreeRelPos("sub"), AxSeqTreeRelPos("mul"), AxSeqTreeRelPos("div"), AxSeqTreeRelPos("assoc~eval:_1"), AxSeqTreeRelPos("comm~assoc:0_"), AxSeqTreeRelPos("eval~mul1:1_"), AxSeqTreeRelPos("eval~eval:0_"), AxSeqTreeRelPos("div~assoc:$_0.0"), AxSeqTreeRelPos("mul1~eval:0_1"), AxSeqTreeRelPos("eval~add0:1_"), AxSeqTreeRelPos("comm~div:0.0_$"), AxSeqTreeRelPos("{comm~div:0.0_$}~{assoc~eval:_1}:$_0.0"), AxSeqTreeRelPos("comm~div~assoc~eval:0.0_$~$_0.0~_1"), AxSeqTreeRelPos("{comm~assoc:0_}~{eval~mul1:1_}:_1"), AxSeqTreeRelPos("comm~assoc~eval~mul1:0_~_1~1_"), AxSeqTreeRelPos("assoc~{comm~assoc:0_}:_0"), AxSeqTreeRelPos("{eval~mul1:1_}~{eval~eval:0_}:0_1.0"), AxSeqTreeRelPos("{comm~assoc:0_}~div_self:_1"), AxSeqTreeRelPos("{assoc~eval:_1}~{mul1~eval:0_1}:1_"), AxSeqTreeRelPos("{comm~div~assoc~eval:0.0_$~$_0.0~_1}~{mul1~eval:0_1}:1_"), AxSeqTreeRelPos("comm~div~assoc~eval~mul1~eval:0.0_$~$_0.0~_1~1_~0_1"), AxSeqTreeRelPos("{comm~div~assoc~eval:0.0_$~$_0.0~_1}~mul1:1_"), AxSeqTreeRelPos("comm~div~assoc~eval~mul1:0.0_$~$_0.0~_1~1_"), AxSeqTreeRelPos("sub~{comm~assoc:0_}:$_0.0.0"), AxSeqTreeRelPos("{eval~eval:0_}~{comm~div~assoc~eval:0.0_$~$_0.0~_1}:1_0"), AxSeqTreeRelPos("eval~eval~comm~div~assoc~eval:0_~1_0~0.0_$~$_0.0~_1"), AxSeqTreeRelPos("sub~comm~assoc:$_0.0.0~0_")]
-            #         },
-            #         'domain': 'equations-ct'
-            # }
-            # env = Environment.from_config(temp_config)
-            # self.environment = env
-            # end fixing absraction bug (to be removed later)
+            checkpoint = torch.load(checkpoint_path, map_location=device)
+            
+            # Store agent's buffers that we don't want to replace
             ex_sols = self.agent.example_solutions
             new_max_negatives = self.agent.max_negatives
-            stored_sols = self.agent.stored_solutions  # should be empty deque
-            self.agent = previous_state.agent
+            stored_sols = self.agent.stored_solutions
+            optimizer_state = self.agent.optimizer.state_dict() if self.agent.keep_optimizer else None
+            
+            if isinstance(checkpoint, dict) and 'agent_state' in checkpoint:
+                # Restore Q-function weights
+                self.agent.q_function.load_state_dict(checkpoint['agent_state']['q_function_state_dict'])
+                
+                # Restore agent state
+                if not restart_count:
+                    self.agent.training_problems_explored = checkpoint['agent_state']['training_problems_explored']
+                    self.agent.training_problems_solved = checkpoint['agent_state']['training_problems_solved']
+                    self.agent.training_acc_moving_average = checkpoint['agent_state']['training_acc_moving_average']
+                    self.agent.current_depth = checkpoint['agent_state']['current_depth']
+                    self.agent.bootstrapping = checkpoint['agent_state']['bootstrapping']
+
+                    self.n_steps = checkpoint['n_steps']
+                    self.n_new_problems = checkpoint['n_new_problems']
+                    self.cumulative_reward = checkpoint['cumulative_reward']
+                    self.n_checkpoints = checkpoint['n_checkpoints']
+                    self.subrun_index = checkpoint['subrun_index']
+                    
+                    # Recreate environment with saved state
+                    if 'environment_state' in checkpoint:
+                        env_state = checkpoint['environment_state']
+                        # Recreate environment with same configuration
+
+                        env_config = {
+                            'environment_backend': 'Rust' if hasattr(self.environment, 'rules') else 'Racket',
+                            'domain': env_state['default_domain'],
+                            'environment_url': self.config.get('environment_url', None),
+                        }
+                        if env_state['rules'] is not None:
+                            env_config['abstractions'] = {'abs_ax': env_state['rules']}
+
+                        self.environment = Environment.from_config(env_config)
+
+                        if hasattr(self.environment, 'next_seed') and env_state['next_seed'] is not None:
+                            self.environment.next_seed = env_state['next_seed']
+
+            else:
+                # Old format (entire object)
+                saved_agent = checkpoint.agent
+                self.agent.q_function.load_state_dict(saved_agent.q_function.state_dict())
+                
+                if not restart_count:
+                    self.agent.training_problems_explored = saved_agent.training_problems_explored
+                    self.agent.training_problems_solved = saved_agent.training_problems_solved
+                    self.agent.training_acc_moving_average = saved_agent.training_acc_moving_average
+                    self.agent.current_depth = saved_agent.current_depth
+                    self.agent.bootstrapping = saved_agent.bootstrapping
+                    
+                    self.n_steps = checkpoint.n_steps
+                    self.n_new_problems = checkpoint.n_new_problems
+                    self.cumulative_reward = checkpoint.cumulative_reward
+                    self.n_checkpoints = checkpoint.n_checkpoints
+                    self.subrun_index = checkpoint.subrun_index
+                    self.environment = checkpoint.environment
+
+
             self.agent.q_function.to(device)
+            
+            # Restore optimizer
+            if not restart_count and optimizer_state and self.agent.keep_optimizer:
+                self.agent.optimizer.load_state_dict(optimizer_state)
+                
             if restart_count:
                 self.agent.training_problems_explored = 0
                 self.agent.training_problems_solved = 0
                 self.agent.training_acc_moving_average = 0.0
-                self.agent.example_solutions = ex_sols
-                self.agent.stored_solutions = stored_sols
-            else:
-                self.n_steps = previous_state.n_steps
-                self.n_new_problems = previous_state.n_new_problems
-                self.cumulative_reward = previous_state.cumulative_reward
-                self.n_checkpoints = previous_state.n_checkpoints
-                self.subrun_index = previous_state.subrun_index
-                self.environment = previous_state.environment
-                self.agent.max_negatives = new_max_negatives
+                
+            self.agent.example_solutions = ex_sols
+            self.agent.stored_solutions = stored_sols
+            self.agent.max_negatives = new_max_negatives
 
     def generate_new(self, domain=None, seed=None):
         self.n_new_problems += 1
@@ -222,32 +270,44 @@ class EnvironmentWithEvaluationProxy:
         print(util.now(), f'Success rate ({name}-{domain}-run{self.run_index}):',
                 results['success_rate'], '\tMax length:', results['max_solution_length'], '\tMean length:', results['mean_solution_length'])
 
-        # try:
-        #     with open(self.results_path, 'rb') as f:
-        #         existing_results = pickle.load(f)
-        # except Exception as e:
-        #     print(f'Starting new results log at {self.results_path} ({e})')
-        #     existing_results = []
+        try:
+            with open(self.results_path, 'rb') as f:
+                existing_results = pickle.load(f)
+        except Exception as e:
+            print(f'Starting new results log at {self.results_path} ({e})')
+            existing_results = []
 
-        # existing_results.append(results)
+        existing_results.append(results)
 
-        # with open(self.results_path, 'wb') as f:
-        #     pickle.dump(existing_results, f)
+        with open(self.results_path, 'wb') as f:
+            pickle.dump(existing_results, f)
 
-        # print("Saving Q-function...")
-        # torch.save(self.agent.q_function,
-        #            os.path.join(self.checkpoint_dir,
-        #                         f'{self.n_checkpoints}.pt' if self.subrun_index is None
-        #                         else f'{self.subrun_index}-{self.n_checkpoints}.pt'))
-        # print("Saving Q-function completed.")
+        self.n_checkpoints += 1
 
-        # self.n_checkpoints += 1
-
-        # print("Saving checkpoint...")
-        # torch.save(self,
-        #            os.path.join(self.checkpoint_dir,
-        #                         'training-state.pt'))
-        # print("Saving checkpoint completed.")
+        print("Saving checkpoint...")
+        # Create a memory-efficient checkpoint
+        checkpoint = {
+            'agent_state': {
+                'q_function_state_dict': self.agent.q_function.state_dict(),
+                'training_problems_explored': self.agent.training_problems_explored,
+                'training_problems_solved': self.agent.training_problems_solved,
+                'training_acc_moving_average': self.agent.training_acc_moving_average,
+                'current_depth': self.agent.current_depth,
+                'bootstrapping': self.agent.bootstrapping,
+            },
+            'n_steps': self.n_steps,
+            'n_new_problems': self.n_new_problems,
+            'cumulative_reward': self.cumulative_reward,
+            'n_checkpoints': self.n_checkpoints,
+            'subrun_index': self.subrun_index,
+            'environment_state': {
+                'default_domain': self.environment.default_domain,
+                'next_seed': getattr(self.environment, 'next_seed', None),
+                'rules': getattr(self.environment, 'rules', None)
+            }
+        }
+        torch.save(checkpoint, os.path.join(self.checkpoint_dir, 'training-state.pt'))
+        print("Saving checkpoint completed.")
 
         if not final and (self.success_thres is not None and results['success_rate'] >= self.success_thres):
             raise EndOfLearning()
@@ -266,6 +326,7 @@ class EnvironmentWithEvaluationProxy:
                 self.evaluate(True)
                 break
             except Exception as e:
+                print('Exception during learning:', e)
                 traceback.print_exc(e)
                 print('Ignoring exception and continuing...')
 
