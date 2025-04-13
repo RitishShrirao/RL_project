@@ -85,21 +85,21 @@ class ContrastiveExample:
     negatives: list[Action]
     gap: int  # How many steps into the future is this example for.
 
-
 @register(LearningAgent)
 class NCE(LearningAgent):
     "Agent that uses the InfoNCE contrastive loss to differentiate positive/negative actions"
     def __init__(self, q_function, config):
         self.q_function = q_function
-        replay_buffer_size = config.get('replay_buffer_size', 10**6)
-        self.examples = collections.deque(maxlen=replay_buffer_size) if 'optimize_every' in config else collections.deque()
+        replay_buffer_size = config.get('replay_buffer_size', 10**6) # Default size if not specified
 
-        # Global state buffer for enhanced negative sampling
+        self.examples = collections.deque(maxlen=replay_buffer_size)
+
+        # Global state buffer for enhanced negative sampling (Seems OK - uses maxlen and stores strings)
         self.use_global_buffer = config.get('use_global_buffer', False)
         global_buffer_size = config.get('global_buffer_size', 10**6)
         self.global_state_buffer = collections.deque(maxlen=global_buffer_size) if self.use_global_buffer else None
-        
-        # Configuration for embedding-based negative sampling
+
+        # Configuration for embedding-based negative sampling (parameters, likely OK)
         self.use_embedding_based_sampling = config.get('use_embedding_based_sampling', False)
         self.num_candidate_negatives = config.get('num_candidate_negatives', 1000)
         self.num_final_negatives = config.get('num_final_negatives', 128)
@@ -114,7 +114,7 @@ class NCE(LearningAgent):
             self.example_solutions = ex_sol
 
         num_store_sol = config.get('num_store_sol')
-        self.stored_solutions = None if num_store_sol is None else collections.deque(maxlen=num_store_sol)  # for discovering abstractions
+        self.stored_solutions = None if num_store_sol is None else collections.deque(maxlen=num_store_sol)
 
         self.training_problems_explored = 0
         self.training_problems_solved = 0
@@ -145,12 +145,8 @@ class NCE(LearningAgent):
 
             self.n_bootstrap_problems = config.get('n_bootstrap_problems', 100)
 
-        # Knob: whether to add an artificial 'success' state in the end
-        # of the solution in training examples. The idea is that this would align
-        # all states that are in the path to a solution closer together.
         self.add_success_state = config.get('add_success_state', False)
         self.keep_optimizer = config.get('keep_optimizer', True)
-        # Knob: how many future states to use as examples.
         self.n_future_states = config.get('n_future_states', 1)
         self.max_negatives = config.get('max_negatives', float('inf'))
         self.learning_rate = config.get('lr', 1e-4)
@@ -163,99 +159,129 @@ class NCE(LearningAgent):
 
     def name(self):
         return 'NCE'
-    
-    # Add states to global buffer
+
     def add_to_global_buffer(self, states):
         """Add states to the global state buffer"""
         if not self.use_global_buffer:
             return
-            
+
         for state in states:
             # Store just the string representation to save memory
             self.global_state_buffer.append(state.facts[-1])
 
-    # Get embedding-based negatives
     def get_embedding_based_negatives(self, positive_action):
         """
         Sample negatives from global buffer based on embedding similarity
-        
+
         Args:
             positive_action: The positive action for which we need negatives
-            
+
         Returns:
             List of negative actions
         """
-        if not self.use_global_buffer or not self.use_embedding_based_sampling:
-            return []
-            
+        if not self.use_global_buffer or not self.use_embedding_based_sampling or not positive_action:
+             return [] # Added check for positive_action not being None
+
         # Get the reference state for similarity (current or next)
         if self.similarity_to_current:
             reference_state = positive_action.state
         else:
             reference_state = positive_action.next_state
-            
+
+        # Handle case where reference_state might be None
+        if reference_state is None:
+            return []
+
         # Sample candidate negatives similar to reference state from the global buffer
         if len(self.global_state_buffer) <= self.num_candidate_negatives:
-            candidate_states = list(self.global_state_buffer)
+            candidate_states_str = list(self.global_state_buffer)
         else:
-            candidate_states = random.sample(list(self.global_state_buffer), self.num_candidate_negatives)
-            
+            # Ensure sample size doesn't exceed buffer size
+            k = min(len(self.global_state_buffer), self.num_candidate_negatives)
+            candidate_states_str = random.sample(list(self.global_state_buffer), k)
+
         # Skip if we don't have enough candidates
-        if not candidate_states:
+        if not candidate_states_str:
             return []
-            
+
         # Create state objects for the candidates
-        candidate_state_objs = [State([s], [''], 0.0) for s in candidate_states]
-        
+        candidate_state_objs = [State([s], [''], 0.0) for s in candidate_states_str]
+
         # Get embeddings from the q_function's encoder
-        with torch.no_grad():
-            reference_embedding = self.q_function.embed_states([reference_state])
-            candidate_embeddings = self.q_function.embed_states(candidate_state_objs)
-            
-            # Compute cosine similarity
-            reference_embedding = F.normalize(reference_embedding, p=2, dim=1)
-            candidate_embeddings = F.normalize(candidate_embeddings, p=2, dim=1)
-            similarities = torch.mm(reference_embedding, candidate_embeddings.t()).squeeze(0)
-            
-            # Get top-k most similar states
-            if len(similarities) <= self.num_final_negatives:
-                top_indices = torch.argsort(similarities, descending=True)
-            else:
-                top_indices = torch.topk(similarities, self.num_final_negatives).indices
-                
+        try:
+            with torch.no_grad():
+                reference_embedding = self.q_function.embed_states([reference_state])
+                candidate_embeddings = self.q_function.embed_states(candidate_state_objs)
+
+                # Compute cosine similarity
+                reference_embedding = F.normalize(reference_embedding, p=2, dim=1)
+                candidate_embeddings = F.normalize(candidate_embeddings, p=2, dim=1)
+                similarities = torch.mm(reference_embedding, candidate_embeddings.t()).squeeze(0)
+
+                # Get top-k most similar states
+                num_to_select = min(len(similarities), self.num_final_negatives)
+                if num_to_select <= 0:
+                    return []
+
+                if len(similarities) <= num_to_select:
+                    # Take all if fewer than requested
+                    top_indices = torch.argsort(similarities, descending=True)
+                else:
+                    top_indices = torch.topk(similarities, num_to_select).indices
+
+        except Exception as e:
+            logging.error(f"Error during embedding-based negative sampling: {e}")
+            return []
+
         # Create actions for the negative states
         negative_actions = []
         for idx in top_indices:
-            neg_state = candidate_state_objs[idx]
-            # Create a dummy action that leads to this negative state
-            neg_action = Action(
-                positive_action.state,  # Same source state
-                f"negative_{idx.item()}",  # Dummy action name
-                neg_state,  # Target state
-                0.0  # No reward
-            )
-            negative_actions.append(neg_action)
-            
+             # Ensure index is valid
+            if idx.item() < len(candidate_state_objs):
+                neg_state = candidate_state_objs[idx.item()]
+                # Create a dummy action that leads to this negative state
+                # Ensure positive_action.state is not None
+                if positive_action.state is not None:
+                    neg_action = Action(
+                        positive_action.state,  # Same source state
+                        f"negative_{idx.item()}",  # Dummy action name
+                        neg_state,  # Target state
+                        0.0  # No reward
+                    )
+                    negative_actions.append(neg_action)
+                else:
+                     logging.warning("Skipping negative action creation due to None positive_action.state")
         return negative_actions
+
 
     def learn_from_environment(self, environment):
         ex_sol_left = True if self.example_solutions and self.training_problems_explored < len(self.example_solutions) else False
 
         wrapper = tqdm.tqdm if self.optimize_every is None else lambda x: x
-        for i in wrapper(range(self.training_problems_explored, len(self.example_solutions)) 
-                         if self.example_solutions and environment.max_steps is None 
+        for i in wrapper(range(self.training_problems_explored, len(self.example_solutions))
+                         if self.example_solutions and environment.max_steps is None
                          else itertools.count(start=self.training_problems_explored)):
             if ex_sol_left:
-                ex_solution = self.example_solutions[i]
-                first_state = State([ex_solution.states[0]], [''], 0.0)
-                solution = self.beam_search(first_state, environment, ex_solution)
-                if i >= len(self.example_solutions) - 1:
+                # Ensure index is valid
+                if i < len(self.example_solutions):
+                    ex_solution = self.example_solutions[i]
+                    first_state = State([ex_solution.states[0]], [''], 0.0)
+                    solution = self.beam_search(first_state, environment, ex_solution)
+                    if i >= len(self.example_solutions) - 1:
+                        ex_sol_left = False
+                        if environment.max_steps is None:
+                            raise EndOfLearning()
+                else:
+                    logging.warning(f"Index {i} out of bounds for example_solutions (len={len(self.example_solutions)}). Skipping.")
                     ex_sol_left = False
                     if environment.max_steps is None:
-                        raise EndOfLearning()
+                         raise EndOfLearning() 
+                    continue # Skip to next iteration or generate new problem
+
             else:
                 problem = environment.generate_new()
                 solution = self.beam_search(problem, environment)
+
             self.training_problems_explored += 1
 
             if solution is not None:
@@ -264,15 +290,17 @@ class NCE(LearningAgent):
 
                 if self.bootstrapping and self.training_problems_solved >= self.n_bootstrap_problems:
                     self.bootstrapping = False
+                    logging.info("Bootstrapping phase finished.") # Added log
+                    print("Bootstrapping phase finished.")
 
-                if self.optimize_every is not None and self.training_problems_solved % self.optimize_every == 0:
+                if self.optimize_every is not None and self.optimize_every > 0 and self.training_problems_solved % self.optimize_every == 0:
                     logging.info('Running SGD steps.')
                     print('Running SGD steps.')
                     self.gradient_steps()
 
             self.training_acc_moving_average = 0.95*self.training_acc_moving_average + 0.05*int(solution is not None)
 
-            if self.step_every is not None and (i + 1) % self.step_every == 0:
+            if self.step_every is not None and self.step_every > 0 and (i + 1) % self.step_every == 0:
                 self.current_depth = min(self.max_depth, self.current_depth + self.depth_step)
                 logging.info(f'Beam search depth increased to {self.current_depth}.')
                 print(f'Beam search depth increased to {self.current_depth}.')
@@ -292,11 +320,13 @@ class NCE(LearningAgent):
         `state`: starting state
         `ex_solution`: an example solution to carry out and to get contrastive examples from'''
 
-        beam = [state]
-        solution = None  # The state that we found that solves the problem.
+        beam = [(state, None)]
+        solution = None
         q = self.get_q_function()
-        seen = {state}
-        visited_states = [[state]]  # List of states visited in each iteration (used to retrieve negatives).
+        seen = {state.facts[-1]}
+        # visited_states_with_actions stores (state, action_that_led_to_state)
+        visited_states_with_actions = [[(state, None)]] # Initial state has no parent action
+
 
         # Add initial state to global buffer if enabled
         if self.use_global_buffer:
@@ -304,182 +334,477 @@ class NCE(LearningAgent):
 
         logging.info(f'Trying {state}')
 
-        for i in range((ex_solution and (len(ex_solution.states))) or self.current_depth):
-            # cur = time.time()
-            rewards, actions = zip(*environment.step(beam))
-            # print("STEPPING TOOK", time.time() - cur)
+        current_max_depth = self.current_depth
+        if ex_solution:
+            current_max_depth = len(ex_solution.states) - 1
 
-            for s, r in zip(beam, rewards):
-                # Record solution, if found.
-                if r:
-                    solution = s
+        for i in range(current_max_depth):
+            current_beam_states = []
+            for item_idx, item in enumerate(beam):
+                assert isinstance(item, tuple) and len(item) == 2, \
+                    f"BEAM CHECK (start loop): Item {item_idx} in 'beam' is not (State, Action/None): {type(item)} {item}"
+                current_beam_states.append(item[0]) # Extract the state (index 0)
 
-            if solution is not None:
-                if ex_solution is None and self.stored_solutions is not None:
-                    self.stored_solutions.append(solution)
+            if not current_beam_states:
+                logging.info(f"Beam became empty at depth {i}. Stopping search.")
                 break
-            
-            # Get next state if given example solution
-            if ex_solution is not None:
-                n_state = ex_solution.states[i+1]
-                next_states = [a.next_state for a in actions[0]]
-                
-                # Add next states to global buffer if enabled
-                if self.use_global_buffer:
-                    self.add_to_global_buffer(next_states)
-                    
-                visited_states.append(next_states)
-                seen.update(next_states)
 
-                found = False
-                for s in next_states:
-                    if s.facts[-1] == n_state:
-                        beam = [s]
-                        found = True
-                        break
-                if not found:
-                    print("Example solution cannot be carried out")
-                    print(f"Looking for next state {n_state} but options are {next_states}")
-                    print("Will try to continue silently")
+            try:
+                results = environment.step(current_beam_states)
 
-            # Get top next states for next beam (if no example solution given)
-            else:
-                all_actions = [a for state_actions in actions for a in state_actions]
-
-                if not len(all_actions):
+                validated_results = []
+                valid_indices = []
+                if not isinstance(results, list):
+                    logging.error(f"FATAL: environment.step did not return a list. Got: {type(results)}. Stopping search.")
                     break
 
-                # Add all next states to global buffer if enabled
-                if self.use_global_buffer:
-                    next_states = [a.next_state for a in all_actions]
-                    self.add_to_global_buffer(next_states)
+                if len(results) != len(current_beam_states):
+                    logging.warning(f"Mismatch between input states ({len(current_beam_states)}) and results ({len(results)}) from environment.step.")
+                    min_len = min(len(results), len(current_beam_states))
+                    results = results[:min_len]
+                    current_beam_states = current_beam_states[:min_len] # Ensure current_beam_states aligns
 
-                # Query model, sort next states by value, then update beam.
-                # cur = time.time()
-                with torch.no_grad():
-                    q_values = q(all_actions).tolist()
-                # print("Q-VALUE COMPUTATION TOOK", time.time() - cur)
-
-                for a, v in zip(all_actions, q_values):
-                    a.value = v
-
-                next_states = []
-                for s, state_actions in zip(beam, actions):
-                    for a in state_actions:
-                        ns = a.next_state
-                        ns.value = q.aggregate(s.value, a.value)
-                        next_states.append(ns)
-
-                next_states.sort(key=lambda s: s.value, reverse=True)
-                # Remove duplicates while keeping the order (i.e. if a state appears multiple times,
-                # keep the one with the largest value). Works because dict is ordered in Python 3.6+.
-                next_states = [s for s in dict.fromkeys(next_states) if s not in seen]
-                visited_states.append(next_states)
-                seen.update(next_states)
-            
-                if len(next_states) <= self.beam_size:
-                    beam = next_states
-                else:
-                    if self.epsilon:
-                        num_rand = round(self.beam_size * self.epsilon)
-                        num_top = self.beam_size - num_rand
-                        beam = next_states[:num_top] + random.sample(next_states[num_top:], num_rand)
+                for idx, item in enumerate(results):
+                    if isinstance(item, tuple) and len(item) == 2:
+                        if isinstance(item[0], (int, float)) and isinstance(item[1], list):
+                            validated_results.append(item)
+                            valid_indices.append(idx)
+                        else:
+                            logging.warning(f"env.step returned invalid tuple content idx {idx}: ({type(item[0])}, {type(item[1])}). Skip.")
                     else:
-                        beam = next_states[:self.beam_size]
-                # print(self.get_q_function().name())
-                # print(next_states[:20])
-                # print(beam)
-            logging.info(f'Beam #{i}: {beam}:')
+                        logging.warning(f"env.step returned non-tuple/wrong size idx {idx}: {type(item)} {item}. Skip.")
+
+                if not validated_results:
+                    logging.error("No valid results from environment.step after validation. Stopping search.")
+                    break
+
+                rewards, actions_per_state = zip(*validated_results)
+                valid_beam_states = [current_beam_states[i] for i in valid_indices] # States corresponding to valid results
+                original_beam_valid_tuples = [beam[i] for i in valid_indices] # Keep the (State, Action) tuple from original beam
+
+                if not valid_beam_states:
+                    logging.error("No valid beam states remaining after filtering env results.")
+                    break
+
+            except Exception as e:
+                logging.error(f"Error during environment step or result processing at depth {i}: {e}")
+                traceback.print_exc()
+                break
+
+            solution_found_this_step = False
+            # Iterate using the states that produced valid results
+            for beam_idx, (current_s, r) in enumerate(zip(valid_beam_states, rewards)):
+                 # current_s is the state object
+                 if r:
+                    # Find the parent action using the original beam tuple corresponding to this valid state
+                    original_parent_tuple = original_beam_valid_tuples[beam_idx]
+                    # Ensure original_parent_tuple is correct format
+                    assert isinstance(original_parent_tuple, tuple) and len(original_parent_tuple) == 2, \
+                        f"SOLUTION CHECK: original_parent_tuple wrong format: {original_parent_tuple}"
+
+                    parent_action = original_parent_tuple[1] # Action is the second element
+
+                    # Double check with visited states if parent_action is None
+                    if parent_action is None and i > 0:
+                          logging.warning(f"Solution found for state {current_s.facts[-1]} but parent action from beam tuple is None at depth {i}. Trying visited states.")
+                          # Look back in visited states using the state object current_s
+                          for step_visited in reversed(visited_states_with_actions):
+                                found_in_step = False
+                                for visited_s, visited_pa in step_visited:
+                                    if visited_pa and visited_pa.next_state == current_s:
+                                        parent_action = visited_pa
+                                        found_in_step = True
+                                        logging.info(f"Found parent action via visited states: {parent_action.action}")
+                                        break
+                                if found_in_step:
+                                        break
+
+
+                    if parent_action is None and i == 0 and state == current_s:
+                        logging.info("Problem solved at initial state.")
+
+                    solution_state = copy.deepcopy(current_s) # Copy the state that triggered reward
+                    solution_state.parent_action = parent_action # Assign the found parent action
+                    solution = solution_state # Store the state object that represents the goal
+                    logging.info(f"Solution found at depth {i}: {solution}")
+                    solution_found_this_step = True
+                    break # Exit inner solution checking loop (over valid_beam_states)
+
+
+            if solution is not None: # Check the main solution variable
+                # Ensure solution state is recorded for path reconstruction if needed
+                if solution.parent_action: # Only add if it has a parent action
+                    # Find the relevant step's visited list to append to
+                    step_to_append_to = -1 # Default to last step
+                    # Find the step where the parent action's state exists
+                    found_parent_step = False
+                    for visited_step_idx in range(len(visited_states_with_actions) -1, -1, -1):
+                        for vs, va in visited_states_with_actions[visited_step_idx]:
+                            if vs == solution.parent_action.state:
+                                step_to_append_to = visited_step_idx + 1 # Append to the *next* step's list
+                                found_parent_step = True
+                                break
+                        if found_parent_step: break
+
+                    if step_to_append_to < len(visited_states_with_actions) and step_to_append_to >=0 :
+                        found_in_visited = any(s_vis == solution for s_vis, _ in visited_states_with_actions[step_to_append_to])
+                        if not found_in_visited:
+                            visited_states_with_actions[step_to_append_to].append((solution, solution.parent_action))
+                    else:
+                        # Append to last list if parent step search failed (might happen if solution is found immediately)
+                        found_in_visited = any(s_vis == solution for s_vis, _ in visited_states_with_actions[-1])
+                        if not found_in_visited:
+                            visited_states_with_actions[-1].append((solution, solution.parent_action))
+
+                break # Exit outer loop (depth loop) because solution was found
+
+
+            next_beam_candidates = [] # Stores (state, parent_action) tuples, sorted by value
+            current_step_visited = [] # Stores (state, parent_action) for this step
+
+            # If example solution is provided, follow it
+            if ex_solution:
+                if len(valid_beam_states) != 1 or len(actions_per_state) != 1:
+                    logging.warning(f"Example Sol: Expected 1 valid state, got {len(valid_beam_states)}. Continue cautiously.")
+
+                if valid_beam_states: # Proceed only if we have a valid state
+                    target_state_fact = ex_solution.states[i+1]
+                    found_next_step = False
+                    current_actions = actions_per_state[0]
+                    parent_state = valid_beam_states[0]
+
+                    # Iterate over the actions to find the one leading to the target state
+                    for action_idx, action in enumerate(current_actions):
+                        assert isinstance(action, Action), \
+                            f"EXAMPLE SOL EXP: Item {action_idx} in current_actions not Action: {type(action)}"
+
+                        next_state = action.next_state
+                        current_step_visited.append((next_state, action))
+                        if next_state.facts[-1] not in seen:
+                            seen.add(next_state.facts[-1])
+                            if self.use_global_buffer:
+                                self.add_to_global_buffer([next_state])
+
+                        if next_state.facts[-1] == target_state_fact:
+                            parent_val = parent_state.value if hasattr(parent_state, 'value') else 0.0
+                            next_state.value = parent_val + 1 # Simple depth/step count value
+                            # Create the tuple for the next beam
+                            next_beam_candidates = [(next_state, action)]
+                            found_next_step = True
+                            break # Stop searching actions
+
+                    if not found_next_step:
+                        logging.error(f"Example solution step failed: Cannot find state '{target_state_fact}' from {parent_state.facts[-1]}. Available: {[a.next_state.facts[-1] for a in current_actions]}")
+                        beam = [] # Empty beam to stop search
+                        break
+
+                else:
+                    logging.error("No valid states left in beam to follow example solution.")
+                    break # Stop if no valid state
+
+                beam = next_beam_candidates # Update beam for next iteration (list of tuples)
+
+            else: # Standard beam search expansion
+                all_actions_in_step = []
+                parent_map = {} # Map action object to parent state object
+
+                # Iterate over the validated states and corresponding actions
+                for parent_state, state_actions in zip(valid_beam_states, actions_per_state):
+                    for action_idx, action in enumerate(state_actions):
+                        assert isinstance(action, Action), \
+                            f"BEAM EXP: Item {action_idx} in state_actions not Action: {type(action)}"
+                        all_actions_in_step.append(action)
+                        parent_map[action] = parent_state
+
+                if not all_actions_in_step:
+                    logging.info(f"No actions available from valid beam states at depth {i}. Stopping search.")
+                    break
+
+                # Add potential next states to global buffer
+                if self.use_global_buffer:
+                    next_states_to_buffer = [a.next_state for a in all_actions_in_step if a.next_state.facts[-1] not in seen]
+                    self.add_to_global_buffer(next_states_to_buffer)
+
+                # Query model
+                try:
+                    with torch.no_grad():
+                        q_values = q(all_actions_in_step).tolist()
+                except Exception as e:
+                    logging.error(f"Error during Q-function call at depth {i}: {e}")
+                    traceback.print_exc()
+                    break
+
+                # Prepare candidates for next beam
+                candidates = [] # List to store (State, Action) tuples
+                for action_idx, (action, value) in enumerate(zip(all_actions_in_step, q_values)):
+                    assert isinstance(action, Action), \
+                        f"CANDIDATE GEN: Item {action_idx} (action) not Action: {type(action)}"
+
+                    action.value = value
+                    next_state = action.next_state
+                    parent_state = parent_map[action]
+                    parent_val = parent_state.value if hasattr(parent_state, 'value') else 0.0
+                    next_state.value = q.aggregate(parent_val, action.value)
+
+                    if next_state.facts[-1] not in seen:
+                        candidate_tuple = (next_state, action)
+                        assert isinstance(candidate_tuple, tuple) and len(candidate_tuple)==2 and isinstance(candidate_tuple[0], State) and isinstance(candidate_tuple[1], Action), \
+                            f"CANDIDATE GEN: Appending wrong format: {type(candidate_tuple)} {candidate_tuple}"
+                        candidates.append(candidate_tuple)
+
+                # Sort candidates
+                candidates.sort(key=lambda item: item[0].value, reverse=True)
+
+                # Build the next beam
+                next_beam = [] # List to store (State, Action) tuples
+                added_facts = set()
+
+                # Epsilon-greedy or Greedy selection
+                # Iterate over 'candidates', which we've asserted contains tuples
+                if len(candidates) > self.beam_size and self.epsilon > 0:
+                    num_rand = int(round(self.beam_size * self.epsilon))
+                    num_top = self.beam_size - num_rand
+                    count = 0
+
+                    # Top candidates
+                    for item_idx, item in enumerate(candidates):
+                        assert isinstance(item, tuple) and len(item)==2, f"EPS TOP: Item {item_idx} not tuple: {item}"
+                        state, action = item
+                        if count >= num_top: break
+                        if state.facts[-1] not in added_facts:
+                            next_beam.append(item) # Append the tuple
+                            added_facts.add(state.facts[-1])
+                            seen.add(state.facts[-1])
+                            current_step_visited.append(item)
+                            count += 1
+                            
+                    # Random candidates
+                    remaining_candidates = [(s, a) for s, a in candidates[count:] if s.facts[-1] not in added_facts]
+                    num_rand_actual = min(num_rand, len(remaining_candidates))
+                    if num_rand_actual > 0:
+                        random_sample = random.sample(remaining_candidates, num_rand_actual)
+                        for item_idx, item in enumerate(random_sample):
+                            assert isinstance(item, tuple) and len(item)==2, f"EPS RAND: Item {item_idx} not tuple: {item}"
+                            state, action = item
+                            next_beam.append(item) # Append the tuple
+                            added_facts.add(state.facts[-1])
+                            seen.add(state.facts[-1])
+                            current_step_visited.append(item)
+
+                else: # Greedy
+                    count = 0
+                    for item_idx, item in enumerate(candidates):
+                        assert isinstance(item, tuple) and len(item)==2, f"GREEDY: Item {item_idx} not tuple: {item}"
+                        state, action = item
+                        if count >= self.beam_size: break
+                        if state.facts[-1] not in added_facts:
+                            next_beam.append(item) # Append the tuple
+                            added_facts.add(state.facts[-1])
+                            seen.add(state.facts[-1])
+                            current_step_visited.append(item)
+                            count += 1
+
+                beam = next_beam # Update beam for the next iteration
+
+            # Add the visited states for this step to the overall list
+            if current_step_visited:        # Avoid adding empty lists
+                visited_states_with_actions.append(current_step_visited)
+
+            # Logging the beam state
+            for item_idx, item in enumerate(beam):
+                assert isinstance(item, tuple) and len(item) == 2, \
+                    f"BEAM CHECK (end loop): Item {item_idx} not (State, Action): {type(item)} {item}"
+            beam_facts = [s.facts[-1] for s, _ in beam]      # Unpack after assertion
+            logging.info(f'Beam #{i+1} (size {len(beam)}): {beam_facts}')
 
             if not beam:
+                logging.info(f"Beam became empty after processing depth {i}. Stopping search.")
                 break
+
+        # Solution Found and Example Generation
+        positive_path = [] # Stores Actions
+        if solution is not None:
+             # Add solution to stored solutions if not following an example
+            if ex_solution is None and self.stored_solutions is not None:
+                self.stored_solutions.append(solution) # Append the State object
+
+            # Reconstruct path (using the parent_action links within the solution state)
+            current_state_in_path = solution
+            while current_state_in_path is not None and current_state_in_path.parent_action is not None:
+                action_in_path = current_state_in_path.parent_action
+                assert isinstance(action_in_path, Action), f"PATH RECONSTRUCTION: Expected Action, got {type(action_in_path)}"
+                positive_path.append(action_in_path)
+                current_state_in_path = action_in_path.state
+
+            positive_path.reverse() # Order actions from start to goal
+
+            # Create contrastive examples
+            # Check consistency between path length and visited states list length
+            if len(positive_path) + 1 != len(visited_states_with_actions):
+                logging.warning(f"Path/Visited length mismatch ({len(positive_path)+1} vs {len(visited_states_with_actions)}). Skipping contrastive example gen.")
+            else:
+                for step_idx, positive_action in enumerate(positive_path):
+
+                    # visited_states_with_actions[step_idx + 1] contains (state, action) tuples from the end of that step
+                    visited_at_step_end = visited_states_with_actions[step_idx + 1]
+
+                    beam_negatives = []
+                    for visited_state, visited_action in visited_at_step_end:
+                        assert visited_action is None or isinstance(visited_action, Action), \
+                            f"CONTRASTIVE GEN: visited_action type error: {type(visited_action)}"
+                        if visited_action and visited_action != positive_action:
+                            if (visited_action.state == positive_action.state or
+                                self.beam_negatives_frac >= random.random()):
+                                beam_negatives.append(visited_action)
+
+                    embedding_negatives = []
+                    if self.use_embedding_based_sampling:
+                         embedding_negatives = self.get_embedding_based_negatives(positive_action)
+
+                    # Combine negatives (handle duplicates carefully if Actions aren't perfectly hashable by identity)
+                    # For simplicity assuming Action objects are hashable for the set, or implement custom duplicate check
+                    try:
+                        all_negatives_set = {a for a in beam_negatives + embedding_negatives if a is not None}
+                        all_negatives = list(all_negatives_set)
+                    except TypeError: # Handle if Action not hashable
+                        logging.warning("Action object not hashable for set deduplication in negatives. Using list with potential duplicates.")
+                        all_negatives = [a for a in beam_negatives + embedding_negatives if a is not None]
+
+
+                    if positive_action is not None:
+                        example = ContrastiveExample(positive=positive_action,
+                                                negatives=all_negatives,
+                                                gap=1)
+                        self.examples.append(example)
+                    else:
+                        logging.warning(f"Skipped contrastive example at step {step_idx} due to None positive_action.")
+
 
         logging.info('Solved? {} (solution len {}, q={})'
                      .format(solution is not None,
-                             solution and len(visited_states),
-                             type(q)))
+                             (len(positive_path) + 1) if solution else 'N/A',
+                             type(q).__name__))
 
-        # If found a solution, make contrastive examples from each iteration.
-        if solution is not None:
-            positive = solution
-
-            for states in reversed(visited_states):
-                if positive.parent_action is None:
-                    break
-
-                # Get standard beam search negatives first
-                beam_negatives = [s.parent_action
-                             for s in states
-                             if s.facts[-1] != positive.facts[-1] and
-                             (s.parent_action.state.facts[-1] ==
-                                 positive.parent_action.state.facts[-1] or
-                                 self.beam_negatives_frac >= random.random())]
-                
-                # Get embedding-based negatives if enabled
-                embedding_negatives = []
-                if self.use_embedding_based_sampling and positive.parent_action is not None:
-                    embedding_negatives = self.get_embedding_based_negatives(positive.parent_action)
-                
-                # Combine negative sets
-                all_negatives = beam_negatives + embedding_negatives
-                
-                # Create contrastive example and add to examples buffer
-                example = ContrastiveExample(positive=positive.parent_action,
-                                             negatives=all_negatives,
-                                             gap=1)
-                self.examples.append(example)
-                positive = positive.parent_action.state
-
-        return solution
+        return solution # Return the final State object representing the solution, or None
 
     def stats(self):
-        base_stats = "{} solutions found, {:.4f} training acc".format(
+        base_stats = "{} solutions, {:.4f} training acc".format(
             self.training_problems_solved,
             self.training_acc_moving_average)
-            
+
         # Add global buffer info if used
         if self.use_global_buffer:
             buffer_stats = ", global buffer size: {}".format(len(self.global_state_buffer))
             return base_stats + buffer_stats
-        
+
         return base_stats
 
     def gradient_steps(self, env=None):
         if not self.examples:
-            return
+            logging.warning("gradient_steps called but no examples in buffer.")
+            return [] # Return empty list if no examples
 
         if not self.keep_optimizer:
             self.reset_optimizer()
 
         celoss = nn.CrossEntropyLoss()
         losses = []
+        # Determine device from model parameters
+        device = next(self.q_function.parameters()).device
+
 
         wrapper = tqdm.tqdm if self.optimize_every is None else lambda x: x
         for i in wrapper(range(self.n_gradient_steps)):
-            if env is not None and i > 0 and i % self.gd_evaluate_every == 0:
+            # Check for evaluation trigger only if env and gd_evaluate_every are valid
+            if env is not None and self.gd_evaluate_every is not None and self.gd_evaluate_every > 0 and i > 0 and i % self.gd_evaluate_every == 0:
                 env.evaluate()
 
-            e = random.choice(self.examples)
-            if self.max_negatives >= len(e.negatives):
-                all_actions = [e.positive] + e.negatives
-            else:
-                all_actions = [e.positive] + random.sample(e.negatives, self.max_negatives)
+            # Sample example safely
+            if not self.examples: break # Stop if buffer becomes empty during steps
+            try:
+                e = random.choice(self.examples)
+            except IndexError:
+                logging.warning("Could not sample from examples deque (likely empty). Stopping gradient steps.")
+                break # Stop if sampling fails
 
-            self.optimizer.zero_grad()
-            f_pred = self.q_function(all_actions)
-            # Here, the batch is casted as a N + 1-class classification instance,
-            # and class 0 is the positive example (by how all_actions is constructed).
-            loss = celoss(f_pred.unsqueeze(0), torch.zeros(1, dtype=int, device=f_pred.device))
-            # wandb.log({'train_loss': loss.item()})
-            losses.append(loss.item())
-            loss.backward()
-            self.optimizer.step()
+
+            # Construct batch safely, handling potential None negatives
+            valid_negatives = [neg for neg in e.negatives if neg is not None] # Filter out None actions
+
+            # Limit number of negatives
+            num_negatives_to_sample = min(self.max_negatives, len(valid_negatives))
+            if num_negatives_to_sample < len(valid_negatives):
+                sampled_negatives = random.sample(valid_negatives, num_negatives_to_sample)
+            else:
+                sampled_negatives = valid_negatives # Use all valid negatives if fewer than max_negatives
+
+            # Ensure positive action is not None before proceeding
+            if e.positive is None:
+                logging.warning("Skipping gradient step due to None positive action in sampled example.")
+                continue # Skip this gradient step
+
+            all_actions = [e.positive] + sampled_negatives
+
+            # Skip if batch is empty or only contains positive (shouldn't happen with valid example)
+            if len(all_actions) <= 1 and not sampled_negatives:
+                logging.warning(f"Skipping gradient step due to only positive action in batch (Example: {e.positive}).")
+                continue
+
+            try:
+                self.optimizer.zero_grad()
+                # Ensure q_function can handle the list of actions
+                f_pred = self.q_function(all_actions)
+
+                # Ensure f_pred is a valid tensor
+                if not isinstance(f_pred, torch.Tensor) or f_pred.nelement() == 0:
+                    logging.error(f"Q-function returned invalid output: {f_pred}")
+                    continue # Skip step
+
+                # Target is always class 0 (the positive example)
+                target = torch.zeros(1, dtype=torch.long, device=device) # Use long dtype for CrossEntropyLoss
+
+                # Calculate loss
+                loss = celoss(f_pred.unsqueeze(0), target)
+
+                # Check for NaN/inf loss
+                if torch.isnan(loss) or torch.isinf(loss):
+                    logging.error(f"NaN or Inf loss detected: {loss.item()}. Skipping backward/step.")
+                    # Optionally log details about f_pred or actions
+                    continue # Skip backprop and step
+
+                wandb.log({'train_loss': loss.item()}) # Uncomment if using wandb
+                losses.append(loss.item())
+                loss.backward()
+
+                # Gradient clipping
+                # torch.nn.utils.clip_grad_norm_(self.q_function.parameters(), max_norm=1.0)
+
+                self.optimizer.step()
+
+            except Exception as err:
+                logging.error(f"Error during gradient step {i}: {err}")
+                traceback.print_exc() # Print full traceback
+                # Consider whether to continue or break loop on error
+                # For robustness, let's continue to the next step for now
+                continue
+
+
+        del e, all_actions, f_pred, loss, target, valid_negatives, sampled_negatives
+        if 'q_values' in locals(): del q_values
 
         gc.collect()
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        # Log average loss if any steps were successful
+        if losses:
+            avg_loss = sum(losses) / len(losses)
+            logging.info(f"Finished {len(losses)} gradient steps with avg loss: {avg_loss:.4f}")
+            wandb.log({'avg_train_loss_batch': avg_loss}) # Log average loss for the batch of steps
+
 
         return losses
-    
+
 @register(LearningAgent)
 class BeamSearchIterativeDeepening(LearningAgent):
     def __init__(self, q_function, config):
@@ -703,7 +1028,7 @@ class BeamSearchIterativeDeepening(LearningAgent):
             loss = F.binary_cross_entropy(r_pred, torch.tensor(batch_r,
                                                                dtype=r_pred.dtype,
                                                                device=r_pred.device))
-            # wandb.log({'train_loss': loss.item()})
+            wandb.log({'train_loss': loss.item()})
             loss.backward()
             optimizer.step()
 
@@ -805,7 +1130,7 @@ class QLearning(LearningAgent):
 
         y = torch.tensor(ys, dtype=q_estimates.dtype, device=q_estimates.device)
         loss = ((y - q_estimates)**2).mean()
-        # wandb.log({'train_loss': loss.item()})
+        wandb.log({'train_loss': loss.item()})
         loss.backward()
         self.optimizer.step()
 
@@ -879,7 +1204,7 @@ class AutodidaticIteration(LearningAgent):
             self.optimizer.zero_grad()
             loss = ((y_p - y)**2).mean()
             loss.backward()
-            # wandb.log({'train_loss': loss.item()})
+            wandb.log({'train_loss': loss.item()})
             self.optimizer.step()
 
         gc.collect()
@@ -952,7 +1277,7 @@ class DAVI(LearningAgent):
             self.optimizer.zero_grad()
             loss = ((y_p - y)**2).mean()
             loss.backward()
-            # wandb.log({'train_loss': loss.item()})
+            wandb.log({'train_loss': loss.item()})
             self.optimizer.step()
 
         gc.collect()
@@ -1019,7 +1344,7 @@ class BehavioralCloning(LearningAgent):
             self.optimizer.zero_grad()
             f_pred = self.q_function(all_actions)
             loss = celoss(f_pred.unsqueeze(0), answer * torch.ones(1, dtype=int, device=f_pred.device))
-            # wandb.log({'train_loss': loss.item()})
+            wandb.log({'train_loss': loss.item()})
             losses.append(loss.item())
             loss.backward()
             self.optimizer.step()
@@ -1029,17 +1354,18 @@ def run_agent_experiment(config, device, resume):
     experiment_id = config['experiment_id']
     domain = config['domain']
     agent_name = config['agent']['name']
-    run_index = config.get('run_index', 0)
+    # run_index = config.get('run_index', 0)
+    run_index = 1
 
     run_id = "{}-{}-{}{}".format(experiment_id, agent_name, domain, run_index)
 
-    # wandb.init(id=run_id,
-    #            name=run_id,
-    #            config=config,
-    #            entity='ritishtest1',
-    #            project=config.get('wandb_project', 'test'),
-    #            reinit=True,
-    #            resume=resume)
+    wandb.init(id=run_id,
+               name=run_id,
+               config=config,
+               entity='ritishtest1',
+               project=config.get('wandb_project', 'test'),
+               reinit=True,
+               resume=resume)
 
     env = Environment.from_config(config)
     q_fn = QFunction.new(config['agent']['q_function'], device)
@@ -1060,13 +1386,13 @@ def learn_abstract(config, device, resume):
 
     run_id = "{}-{}-{}{}".format(experiment_id, agent_name, domain, run_index)
 
-    # wandb.init(id=run_id,
-    #            name=run_id,
-    #            config=config,
-    #            entity='ritishtest1',
-    #            project=config.get('wandb_project', 'test'),
-    #            reinit=True,
-    #            resume=resume)
+    wandb.init(id=run_id,
+               name=run_id,
+               config=config,
+               entity='ritishtest1',
+               project=config.get('wandb_project', 'test'),
+               reinit=True,
+               resume=resume)
 
     restart_count = False
     subrun_index = 0
@@ -1321,6 +1647,9 @@ if __name__ == '__main__':
 
     # Only shown in debug mode.
     logging.info('Running in debug mode.')
+
+    # Resume for wandb logging
+    opt.resume = config.get('resume', "allow")
 
     if opt.learn:
         run_agent_experiment(config, device, opt.resume)

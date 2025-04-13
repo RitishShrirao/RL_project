@@ -280,6 +280,16 @@ class Bilinear(QFunction):
             embeddings.append(state_embedding)
 
         return torch.cat(embeddings, dim=0)
+    
+    def embed_strings(self, strings):
+        state_seq, _ = self.vocab.embed_batch(strings, self.device)
+        state_seq = state_seq.transpose(0, 1)
+
+        _, (state_hn, state_cn) = self.encoder(state_seq)
+        state_embedding = (state_hn
+                           .view(self.lstm_layers, 2, len(strings), self.hidden_dim)[-1]
+                           .permute((1, 2, 0)).reshape(len(strings), 2*self.hidden_dim))
+        return state_embedding
 
     def name(self):
         return 'Bilinear'
