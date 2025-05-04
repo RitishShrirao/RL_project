@@ -135,7 +135,7 @@ class EnvironmentWithEvaluationProxy:
         if os.path.exists(checkpoint_path):
             print('Training checkpoint exists - restoring...')
             device = self.agent.q_function.device
-            checkpoint = torch.load(checkpoint_path, map_location=device)
+            checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
             
             # Store agent's buffers that we don't want to replace
             ex_sols = self.agent.example_solutions
@@ -167,13 +167,26 @@ class EnvironmentWithEvaluationProxy:
                         # Recreate environment with same configuration
 
                         env_config = {
-                            'environment_backend': 'Rust' if hasattr(self.environment, 'rules') else 'Racket',
+                            # Determine backend based on whether 'rules' attribute existed in the *original* proxy environment
+                            'environment_backend': 'Rust' if hasattr(self.environment, 'rules') else 'Racket', 
                             'domain': env_state['default_domain'],
-                            'environment_url': self.config.get('environment_url', None),
+                            'environment_url': self.config.get('environment_url', None), # Get URL from proxy's config
                         }
                         if env_state['rules'] is not None:
-                            env_config['abstractions'] = {'abs_ax': env_state['rules']}
-
+                            # Ensure both rules and type are present
+                            if 'abs_type_name' in env_state and env_state['abs_type_name'] is not None:
+                                env_config['abstractions'] = {
+                                    'abs_ax': env_state['rules'],
+                                    'abs_type': env_state['abs_type_name'] # Use the loaded type name
+                                }
+                            else:
+                                print("Warning: Abstraction type not found in checkpoint's environment state. Defaulting to 'ax_seq'.")
+                                # --- Default to 'ax_seq' ---
+                                env_config['abstractions'] = {
+                                    'abs_ax': env_state['rules'],
+                                    'abs_type': 'ax_seq' 
+                                }
+                                
                         self.environment = Environment.from_config(env_config)
 
                         if hasattr(self.environment, 'next_seed') and env_state['next_seed'] is not None:
@@ -218,37 +231,186 @@ class EnvironmentWithEvaluationProxy:
         self.n_new_problems += 1
         return self.environment.generate_new(domain, seed)
 
+    # def step(self, states, domain=None):
+    #     n_steps_before = self.n_steps
+    #     self.n_steps += len(states)
+
+    #     # If the number of steps crossed the boundary of '0 mod evaluate_every', run evaluation.
+    #     # If the agent took one step at a time, then we would only need to test if
+    #     # n_steps % evaluate_every == 0. However the agent might take multiple steps at once.
+    #     if self.agent.optimize_every is not None and (n_steps_before % self.evaluate_every) + len(states) >= self.evaluate_every:
+    #         self.evaluate()
+
+    #     if self.max_steps is not None and self.n_steps >= self.max_steps:
+    #         # Budget ended.
+    #         raise EndOfLearning()
+
+    #     reward_and_actions = self.environment.step(states, domain)
+    #     self.cumulative_reward += sum(rw for rw, _ in reward_and_actions)
+
+    #     # Same logic as with evaluate_every.
+    #     if self.agent.optimize_every is not None and (n_steps_before % self.print_every) + len(states) >= self.print_every:
+    #         self.print_progress()
+
+    #     return reward_and_actions
+
+    # def evaluate(self, final=False):
+    #     print('Evaluating...')
+    #     name, domain = self.agent_name, self.environment.default_domain
+
+    #     self.environment.test()
+    #     evaluator = SuccessRatePolicyEvaluator(self.environment, self.eval_config)
+    #     results = evaluator.evaluate(self.agent.get_q_function())
+    #     self.environment.train()
+    #     results['n_steps'] = self.n_steps
+    #     results['experiment_id'] = self.experiment_id
+    #     results['run_index'] = self.run_index
+    #     if self.subrun_index is not None:
+    #         results['subrun_index'] = self.subrun_index
+    #     results['name'] = name
+    #     results['domain'] = domain
+    #     results['problems_seen'] = self.n_new_problems
+    #     results['cumulative_reward'] = self.cumulative_reward
+
+    #     # wandb.log({'success_rate': results['success_rate'],
+    #     #            'problems_seen': results['problems_seen'],
+    #     #            'n_environment_steps': results['n_steps'],
+    #     #            'cumulative_reward': results['cumulative_reward'],
+    #     #            'max_solution_length': results['max_solution_length'],
+    #     #            'mean_solution_length': results['mean_solution_length']
+    #     #            })
+
+    #     print(util.now(), f'Success rate ({name}-{domain}-run{self.run_index}):',
+    #             results['success_rate'], '\tMax length:', results['max_solution_length'], '\tMean length:', results['mean_solution_length'])
+
+    #     try:
+    #         with open(self.results_path, 'rb') as f:
+    #             existing_results = pickle.load(f)
+    #     except Exception as e:
+    #         print(f'Starting new results log at {self.results_path} ({e})')
+    #         existing_results = []
+
+    #     existing_results.append(results)
+
+    #     with open(self.results_path, 'wb') as f:
+    #         pickle.dump(existing_results, f)
+
+    #     self.n_checkpoints += 1
+
+    #     print("Saving checkpoint...")
+    #     # Create a memory-efficient checkpoint
+    #     checkpoint = {
+    #         'agent_state': {
+    #             'q_function_state_dict': self.agent.q_function.state_dict(),
+    #             'training_problems_explored': self.agent.training_problems_explored,
+    #             'training_problems_solved': self.agent.training_problems_solved,
+    #             'training_acc_moving_average': self.agent.training_acc_moving_average,
+    #             'current_depth': self.agent.current_depth,
+    #             'bootstrapping': self.agent.bootstrapping,
+    #         },
+    #         'n_steps': self.n_steps,
+    #         'n_new_problems': self.n_new_problems,
+    #         'cumulative_reward': self.cumulative_reward,
+    #         'n_checkpoints': self.n_checkpoints,
+    #         'subrun_index': self.subrun_index,
+    #         'environment_state': {
+    #             'default_domain': self.environment.default_domain,
+    #             'next_seed': getattr(self.environment, 'next_seed', None),
+    #             'rules': getattr(self.environment, 'rules', None)
+    #         }
+    #     }
+    #     # torch.save(checkpoint, os.path.join(self.checkpoint_dir, 'training-state.pt'))
+    #     print("Saving checkpoint completed.")
+
+    #     if not final and (self.success_thres is not None and results['success_rate'] >= self.success_thres):
+    #         raise EndOfLearning()
+
     def step(self, states, domain=None):
         n_steps_before = self.n_steps
+        # IMPORTANT: Increment n_steps *before* checking limits
         self.n_steps += len(states)
 
-        # If the number of steps crossed the boundary of '0 mod evaluate_every', run evaluation.
-        # If the agent took one step at a time, then we would only need to test if
-        # n_steps % evaluate_every == 0. However the agent might take multiple steps at once.
-        if self.agent.optimize_every is not None and (n_steps_before % self.evaluate_every) + len(states) >= self.evaluate_every:
-            self.evaluate()
+        # Check for intermediate evaluation trigger (using n_steps_before)
+        # Added check for None to avoid error if evaluate_every is not set
+        if self.evaluate_every is not None and self.agent.optimize_every is not None and \
+           (n_steps_before % self.evaluate_every) + len(states) >= self.evaluate_every:
+            print(f"--- Triggering intermediate evaluation at step {self.n_steps} ---")
+            self.evaluate() # Calls intermediate evaluation
 
-        if self.max_steps is not None and self.n_steps >= self.max_steps:
-            # Budget ended.
-            raise EndOfLearning()
+        # Check for max_steps limit *for the current iteration*
+        if self.max_steps is not None:
+            # Calculate the step count where the *current* iteration should end
+            # We need the total iterations count from the main config
+            total_iterations = self.config.get('iterations', 1) # Get total iterations from stored config
+            current_iteration_end_step = 0
+            if self.subrun_index is not None:
+                 # Calculate the cumulative step count at the end of this iteration
+                 # Assumes n_steps was correctly restored from checkpoint for previous iterations
+                 # Find the *start* step of this iteration
+                 start_step_current_iter = self.max_steps * self.subrun_index
+                 current_iteration_end_step = start_step_current_iter + self.max_steps
+            else:
+                 # Not in learn_abstract loop, max_steps is the total limit
+                 current_iteration_end_step = self.max_steps
 
-        reward_and_actions = self.environment.step(states, domain)
+            # Raise EndOfLearning if the *current total step count* exceeds the calculated end step for this iteration
+            if self.n_steps >= current_iteration_end_step:
+                print(f"--- Iteration {self.subrun_index} budget end ({current_iteration_end_step}) reached at step {self.n_steps}. Raising EndOfLearning. ---")
+                raise EndOfLearning()
+
+        # Call the base environment's step
+        try:
+            reward_and_actions = self.environment.step(states, domain)
+        except Exception as e:
+            print(f"--- Error during base environment step: {e} ---")
+            traceback.print_exc()
+            raise # Re-raise for now
+
         self.cumulative_reward += sum(rw for rw, _ in reward_and_actions)
 
-        # Same logic as with evaluate_every.
-        if self.agent.optimize_every is not None and (n_steps_before % self.print_every) + len(states) >= self.print_every:
+        # Check for printing progress (using n_steps_before)
+        # Added check for None to avoid error if print_every is not set
+        if self.print_every is not None and self.agent.optimize_every is not None and \
+           (n_steps_before % self.print_every) + len(states) >= self.print_every:
             self.print_progress()
 
         return reward_and_actions
 
+    
     def evaluate(self, final=False):
         print('Evaluating...')
-        name, domain = self.agent_name, self.environment.default_domain
+        name, domain = self.agent_name, self.environment.default_domain # Use underlying env domain
 
-        self.environment.test()
+        # Ensure the underlying environment is in the correct mode (test) for evaluation
+        # Store original mode to restore later if necessary
+        original_mode_is_train = False
+        if hasattr(self.environment, 'is_train') and hasattr(self.environment, 'test'):
+             original_mode_is_train = self.environment.is_train
+             if original_mode_is_train:
+                 self.environment.test()
+        elif hasattr(self.environment, 'test'): # If no is_train, just call test
+            self.environment.test()
+
+
+        # *** Pass the *underlying* self.environment to the evaluator ***
         evaluator = SuccessRatePolicyEvaluator(self.environment, self.eval_config)
-        results = evaluator.evaluate(self.agent.get_q_function())
-        self.environment.train()
+
+        # Get the Q function to evaluate
+        q_function_to_eval = self.agent.get_q_function()
+
+        # Determine if solutions should be stored during this evaluation run
+        # Only store during the final evaluation if the agent supports it
+        solutions_buffer = self.agent.stored_solutions if final and hasattr(self.agent, 'stored_solutions') else None
+
+        # Run evaluation using the underlying environment
+        # The evaluator will use its own max_steps from eval_config
+        results = evaluator.evaluate(q_function_to_eval, stored_solutions=solutions_buffer)
+
+        # Restore the underlying environment's mode if it was changed
+        if hasattr(self.environment, 'train') and original_mode_is_train:
+             self.environment.train()
+
+        # Add metadata to results (using the proxy's total step count)
         results['n_steps'] = self.n_steps
         results['experiment_id'] = self.experiment_id
         results['run_index'] = self.run_index
@@ -259,17 +421,19 @@ class EnvironmentWithEvaluationProxy:
         results['problems_seen'] = self.n_new_problems
         results['cumulative_reward'] = self.cumulative_reward
 
-        # wandb.log({'success_rate': results['success_rate'],
-        #            'problems_seen': results['problems_seen'],
-        #            'n_environment_steps': results['n_steps'],
-        #            'cumulative_reward': results['cumulative_reward'],
-        #            'max_solution_length': results['max_solution_length'],
-        #            'mean_solution_length': results['mean_solution_length']
-        #            })
+        # Log results (e.g., to wandb) - uncomment if using wandb
+        wandb.log({'success_rate': results['success_rate'],
+                   'problems_seen': results['problems_seen'],
+                   'n_environment_steps': results['n_steps'],
+                   'cumulative_reward': results['cumulative_reward'],
+                   'max_solution_length': results['max_solution_length'],
+                   'mean_solution_length': results['mean_solution_length']
+                   })
 
-        print(util.now(), f'Success rate ({name}-{domain}-run{self.run_index}):',
+        print(util.now(), f'Success rate ({name}-{domain}-run{self.run_index}{"-" + str(self.subrun_index) if self.subrun_index is not None else ""}):',
                 results['success_rate'], '\tMax length:', results['max_solution_length'], '\tMean length:', results['mean_solution_length'])
 
+        # Save results to a pickle file
         try:
             with open(self.results_path, 'rb') as f:
                 existing_results = pickle.load(f)
@@ -279,11 +443,17 @@ class EnvironmentWithEvaluationProxy:
 
         existing_results.append(results)
 
-        with open(self.results_path, 'wb') as f:
-            pickle.dump(existing_results, f)
+        try:
+            with open(self.results_path, 'wb') as f:
+                pickle.dump(existing_results, f)
+        except Exception as e:
+            print(f"Error saving results to {self.results_path}: {e}")
 
+
+        # Increment checkpoint counter *before* saving the checkpoint
         self.n_checkpoints += 1
 
+        # Save checkpoint logic
         print("Saving checkpoint...")
         # Create a memory-efficient checkpoint
         checkpoint = {
@@ -294,41 +464,87 @@ class EnvironmentWithEvaluationProxy:
                 'training_acc_moving_average': self.agent.training_acc_moving_average,
                 'current_depth': self.agent.current_depth,
                 'bootstrapping': self.agent.bootstrapping,
+                # Add optimizer state if needed and self.agent.keep_optimizer is True
+                'optimizer_state_dict': self.agent.optimizer.state_dict() if self.agent.keep_optimizer else None,
             },
             'n_steps': self.n_steps,
             'n_new_problems': self.n_new_problems,
             'cumulative_reward': self.cumulative_reward,
-            'n_checkpoints': self.n_checkpoints,
+            'n_checkpoints': self.n_checkpoints, # Save the *new* checkpoint number
             'subrun_index': self.subrun_index,
             'environment_state': {
                 'default_domain': self.environment.default_domain,
                 'next_seed': getattr(self.environment, 'next_seed', None),
-                'rules': getattr(self.environment, 'rules', None)
+                'rules': getattr(self.environment, 'rules', None),
+                'abs_type_name': getattr(self.environment, 'AbsType', None).__name__ if hasattr(self.environment, 'AbsType') and getattr(self.environment, 'AbsType', None) else None
             }
         }
-        torch.save(checkpoint, os.path.join(self.checkpoint_dir, 'training-state.pt'))
+        try:
+            # Define checkpoint path using the current subrun_index and n_checkpoints
+            checkpoint_filename = f'{self.subrun_index}-{self.n_checkpoints-1}.pt' if self.subrun_index is not None else f'{self.n_checkpoints-1}.pt'
+            specific_checkpoint_path = os.path.join(self.checkpoint_dir, checkpoint_filename)
+            # torch.save(self.agent.q_function, specific_checkpoint_path) # Save just the model weights
+
+            # Save the overall training state separately
+            training_state_path = os.path.join(self.checkpoint_dir, 'training-state.pt')
+            torch.save(checkpoint, training_state_path)
+            print(f"Saved model to {specific_checkpoint_path}")
+            print(f"Saved training state to {training_state_path}")
+        except Exception as e:
+            print(f"Error saving checkpoint: {e}")
+            traceback.print_exc()
         print("Saving checkpoint completed.")
 
+
+        # Check success threshold based on evaluation results
+        # If threshold met during intermediate eval, raise EndOfLearning
+        # This will be caught by evaluate_agent's loop handler
         if not final and (self.success_thres is not None and results['success_rate'] >= self.success_thres):
+            print(f"Success threshold {self.success_thres} met or exceeded ({results['success_rate']}). Raising EndOfLearning.")
             raise EndOfLearning()
 
 
+
+    # def evaluate_agent(self):
+    #     if self.n_checkpoints == 0:  # False when loading an existing training run
+    #         self.evaluate()
+    #     while True:
+    #         try:
+    #             self.agent.learn_from_environment(self)
+    #         except EndOfLearning:
+    #             print('Learning budget ended. Doing last learning round (if agent wants to)')
+    #             self.agent.learn_from_experience(self)
+    #             print('Running final evaluation...')
+    #             self.evaluate(True)
+    #             break
+    #         except Exception as e:
+    #             print('Exception during learning:', e)
+    #             traceback.print_exc(e)
+    #             print('Ignoring exception and continuing...')
+
     def evaluate_agent(self):
-        if self.n_checkpoints == 0:  # False when loading an existing training run
-            self.evaluate()
-        while True:
+        if self.n_checkpoints == 0:
+            self.evaluate() # Initial evaluation
+
+        training_complete = False
+        while not training_complete:
             try:
+                # This uses the proxy's step method, which correctly raises EndOfLearning on max_steps
                 self.agent.learn_from_environment(self)
-            except EndOfLearning:
-                print('Learning budget ended. Doing last learning round (if agent wants to)')
-                self.agent.learn_from_experience(self)
-                print('Running final evaluation...')
-                self.evaluate(True)
-                break
+            except EndOfLearning: # Caught when proxy's step hits max_steps OR evaluate() raises it due to success_thres
+                print('Learning budget ended or success threshold met.')
+                # Optional: Allow agent to process final batch of experience
+                if hasattr(self.agent, 'learn_from_experience'):
+                    self.agent.learn_from_experience(self)
+                training_complete = True # Exit the training loop
             except Exception as e:
                 print('Exception during learning:', e)
-                traceback.print_exc(e)
+                traceback.print_exc()
                 print('Ignoring exception and continuing...')
+
+        print('Running final evaluation...')
+        self.evaluate(True)
+
 
     def print_progress(self):
         print(util.now(), '{} steps ({:.3}%, ETA: {}), {} total reward, explored {} problems. {}'

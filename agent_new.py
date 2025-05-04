@@ -16,6 +16,7 @@ import math
 import subprocess
 import logging
 import numpy as np
+import traceback
 
 import gc
 
@@ -275,7 +276,7 @@ class NCE(LearningAgent):
                     logging.warning(f"Index {i} out of bounds for example_solutions (len={len(self.example_solutions)}). Skipping.")
                     ex_sol_left = False
                     if environment.max_steps is None:
-                         raise EndOfLearning() 
+                        raise EndOfLearning() 
                     continue # Skip to next iteration or generate new problem
 
             else:
@@ -385,6 +386,11 @@ class NCE(LearningAgent):
                 if not valid_beam_states:
                     logging.error("No valid beam states remaining after filtering env results.")
                     break
+
+            # --- Catch EndOfLearning specifically and re-raise ---
+            except EndOfLearning:
+                logging.info(f"EndOfLearning caught inside beam_search at depth {i}. Re-raising.")
+                raise # Re-raise the exception to propagate it upwards
 
             except Exception as e:
                 logging.error(f"Error during environment step or result processing at depth {i}: {e}")
@@ -772,7 +778,7 @@ class NCE(LearningAgent):
                     # Optionally log details about f_pred or actions
                     continue # Skip backprop and step
 
-                wandb.log({'train_loss': loss.item()}) # Uncomment if using wandb
+                wandb.log({'train_loss': loss.item()}) 
                 losses.append(loss.item())
                 loss.backward()
 
@@ -876,6 +882,72 @@ class BeamSearchIterativeDeepening(LearningAgent):
             if (i + 1) % self.step_every == 0:
                 self.current_depth = min(self.max_depth, self.current_depth + self.depth_step)
                 logging.info(f'Beam search depth increased to {self.current_depth}.')
+
+    # def learn_from_environment(self, environment):
+    #     ex_sol_left = True if self.example_solutions and self.training_problems_explored < len(self.example_solutions) else False
+    #     if self.bootstrapping and self.training_problems_solved >= self.n_bootstrap_problems:
+    #         print("Bootstrap phase complete.")
+    #         self.bootstrapping = False
+
+    #     # REMOVE the outer try block around the loop
+    #     # try: # <-- REMOVE
+    #     for i in itertools.count():
+    #         # Check if using example solutions
+    #         if ex_sol_left:
+    #             if self.training_problems_explored >= len(self.example_solutions):
+    #                 print("Finished all example solutions.")
+    #                 ex_sol_left = False
+    #                 # If max_steps is the only limit, we need to stop if examples run out
+    #                 if environment.max_steps is None:
+    #                      print("Finished examples and no max_steps defined. Stopping learn_from_environment.")
+    #                      break # Exit the loop if no more examples and no step limit
+    #                 s = environment.generate_new()
+    #                 ex_solution = None
+    #             else:
+    #                 ex_solution = self.example_solutions[self.training_problems_explored]
+    #                 s = environment.generate_new(seed=ex_solution.problem_seed) # Use seed from example
+    #                 print(f"Using example solution {self.training_problems_explored}: {s.facts[-1]}")
+    #         else:
+    #             s = environment.generate_new()
+    #             ex_solution = None
+
+    #         self.training_problems_explored += 1
+
+    #         solution = self.beam_search(s, environment, ex_solution=ex_solution)
+
+    #         if solution is not None:
+    #             self.training_problems_solved += 1
+    #             # Update moving average accuracy
+    #             self.training_acc_moving_average = self.training_acc_moving_average * 0.99 + 0.01
+
+    #             # Add positive example if using contrastive loss
+    #             if hasattr(self, 'add_positive_example'):
+    #                 self.add_positive_example(solution)
+
+    #         else: # Failed to find solution
+    #             # Update moving average accuracy
+    #             self.training_acc_moving_average = self.training_acc_moving_average * 0.99
+
+    #         # Check if bootstrapping is complete
+    #         if self.bootstrapping and self.training_problems_solved >= self.n_bootstrap_problems:
+    #             print("Bootstrap phase complete.")
+    #             self.bootstrapping = False
+
+    #         # Check if optimization step is needed
+    #         if self.optimize_every is not None and self.training_problems_explored % self.optimize_every == 0:
+    #             if not self.bootstrapping: # Only optimize after bootstrapping
+    #                 losses = self.gradient_steps(environment)
+    #                 if losses:
+                        # Log average loss if needed (e.g., wandb.log({'train_loss': np.mean(losses)}))
+    #                     pass
+
+    #         # Check if depth needs stepping (only relevant if not following examples strictly)
+    #         if self.step_every is not None and self.step_every > 0 and (self.training_problems_explored + 1) % self.step_every == 0:
+    #              if self.depth_step is not None and self.depth_step > 0: # Check if depth_step is defined and positive
+    #                  self.current_depth = min(self.max_depth, self.current_depth + self.depth_step)
+    #                  logging.info(f'Beam search depth increased to {self.current_depth}.')
+    #                  print(f'Beam search depth increased to {self.current_depth}.')
+    #     print("Exiting NCE.learn_from_environment.") # This might not be reached if EndOfLearning is raised
 
     def learn_from_experience(self):
         if self.full_imitation_learning:
@@ -1354,8 +1426,7 @@ def run_agent_experiment(config, device, resume):
     experiment_id = config['experiment_id']
     domain = config['domain']
     agent_name = config['agent']['name']
-    # run_index = config.get('run_index', 0)
-    run_index = 1
+    run_index = config.get('run_index', 0)
 
     run_id = "{}-{}-{}{}".format(experiment_id, agent_name, domain, run_index)
 
@@ -1567,7 +1638,7 @@ def run_batch_experiment(config, range_to_run):
                         'environment_url': 'http://localhost:{}'.format(port),
                         'multitask_train_domains': config.get('multitask_train_domains'),
                         'eval_environment': copy.deepcopy(config['eval_environment']),
-                        'wandb_project': config.get('wandb_project')
+                        # # 'wandb_project': config.get('wandb_project')
                     }
 
                     has_abstractions = agent.get('compression') is not None
@@ -1582,7 +1653,7 @@ def run_batch_experiment(config, range_to_run):
                     print('Running agent with config', json.dumps(run_config))
 
                     agent_process = subprocess.Popen(
-                        ['python3', 'agent_new.py', f'--{command}', '--config', json.dumps(run_config)]
+                        ['python3', 'agent_rust.py', f'--{command}', '--config', json.dumps(run_config)]
                         + (['--gpu', str(gpus[agent_index % len(gpus)])] if gpus else []),
                         stderr=subprocess.DEVNULL)
                     run_processes.append(agent_process)
@@ -1648,7 +1719,6 @@ if __name__ == '__main__':
     # Only shown in debug mode.
     logging.info('Running in debug mode.')
 
-    # Resume for wandb logging
     opt.resume = config.get('resume', "allow")
 
     if opt.learn:

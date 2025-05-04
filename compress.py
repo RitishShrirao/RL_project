@@ -595,7 +595,7 @@ if __name__ == "__main__":
             solutions = abs_util.load_solutions(args.sol_data)
     else:
         solutions = args.sol_data
-    _, axioms = abs_util.load_axioms("equation_axioms.json")
+    _, axioms = abs_util.load_axioms("lemma/equation_axioms.json")
     axioms = [Axiom(ax_name) for ax_name in axioms]
 
     if args.test:
