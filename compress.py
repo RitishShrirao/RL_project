@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Simple compression algorithm that finds common subsequences of actions and abstracts them.
 """
@@ -8,17 +9,27 @@ import pickle
 import argparse
 import warnings
 import math
+import gym
+import numpy as np
+from gym import spaces
 import random
+import gym
+import torch
+import numpy as np
+from gym import spaces
+from stable_baselines3 import PPO
+import json
 from collections import defaultdict
 from dataclasses import dataclass
 import heapq
+
 import itertools
 
 from datetime import datetime
 import doctest
 
 from steps import Step, AbsStep, Solution
-from abstractions import Axiom, Abstraction, ABS_TYPES, AxSeqTreeRelPos
+from abstractions import Axiom, Abstraction, ABS_TYPES, AxSeqTreeRelPos,AxiomSeq
 import abs_util
 
 
@@ -128,18 +139,22 @@ class IterAbsPairs(Compress):
 
         frequencies = defaultdict(int) if not self.peek_pos else defaultdict(lambda: [0, defaultdict(int), {}, {}])
         for i, (sol, legal_zones) in enumerate(zip(self.solutions, mask_list)):
-            for length in range(min_len, 1 + (max_len or len(sol.actions))):
-                for start_idx, end_idx in legal_zones:
-                    for j in range(start_idx, end_idx - length + 1):
+            cur_max_abs_len = max_len if max_len is not None else len(sol.actions)
+            for start_idx, end_idx in legal_zones:
+                last_inds = defaultdict(int)
+                for j in range(start_idx, end_idx - min_len + 1):
+                    for length in range(min_len, 1 + min(cur_max_abs_len, end_idx - j)):
                         abstract = self.AbsType.from_steps(sol.actions[j:j+length], ex_states=sol.states[j:j+length+1])
-                        if not self.peek_pos:
-                            frequencies[abstract] += 1
-                        else:
-                            frequencies[abstract][0] += 1
-                            wp_abs = AxSeqTreeRelPos.from_steps(sol.actions[j:j+length], ex_states=sol.states[j:j+length+1])
-                            frequencies[abstract][1][wp_abs.rel_pos] += 1
-                            frequencies[abstract][2][wp_abs.rel_pos] = wp_abs.ex_steps
-                            frequencies[abstract][3][wp_abs.rel_pos] = wp_abs.ex_states
+                        if j >= last_inds[abstract]:
+                            if not self.peek_pos:
+                                frequencies[abstract] += 1
+                            else:
+                                frequencies[abstract][0] += 1
+                                wp_abs = AxSeqTreeRelPos.from_steps(sol.actions[j:j+length], ex_states=sol.states[j:j+length+1])
+                                frequencies[abstract][1][wp_abs.rel_pos] += 1
+                                frequencies[abstract][2][wp_abs.rel_pos] = wp_abs.ex_steps
+                                frequencies[abstract][3][wp_abs.rel_pos] = wp_abs.ex_states
+                            last_inds[abstract] = j + length
         if not self.peek_pos:
             for abstract in frequencies:
                 frequencies[abstract] /= factor
@@ -272,6 +287,8 @@ class IAPLogN(IterAbsPairs):
         Only chooses one abstraction; use `iter_abstract` to get multiple
         """
         frequencies = self.frequencies or self.get_frequencies(len(self.solutions), self.max_abs_len, mask=mask)
+        if not frequencies:
+            return None, None
         for abstract in frequencies:
             abstract.score = abstract.freq * (len(abstract) - 1)
         top_abs = max(frequencies, key=lambda ab: ab.score)
@@ -293,8 +310,9 @@ class IAPLogN(IterAbsPairs):
         for i in itertools.count() if self.top is None else range(self.top):
             abstractor = IAPLogN(sols, axioms, self.config)
             top_abs, increment = abstractor.get_top_abs(mask=abs_set)
+            print(top_abs)
             print(increment)
-            if self.top is None and increment < 0:
+            if increment is None or (self.top is None and increment < 0):
                 break
             abstractions.append(top_abs)
             abs_set.add(top_abs)
@@ -427,7 +445,250 @@ class AbsDTrieHeapElt:
     def __lt__(self, other):
         return self.score > other.score
 
+from itertools import permutations
 
+
+
+class PPO_Learner(Compress):
+
+    def __init__(self, solutions: list[Solution], cur_axioms: list, config: dict):
+        super().__init__(solutions, cur_axioms, config)
+        self.cur_axioms=cur_axioms
+
+    class EnvQwer(gym.Env):
+        
+        def solution_to_dict(self,solution_obj: Solution) :
+            if not isinstance(solution_obj, Solution) or not solution_obj.states:
+                # Handle invalid input or empty solution
+                return None
+
+            # The 'problem' is the initial state
+            problem_state = solution_obj.states[0]
+
+            # Build the list of solution steps
+            solution_steps = []
+
+            # Add the initial state with "assumption" action
+            solution_steps.append({
+                "state": problem_state,
+                "action": "assumption"
+            })
+
+            # Add the subsequent states and actions
+            # Ensure the number of actions matches states length - 1
+            if len(solution_obj.actions) != len(solution_obj.states) - 1:
+                print(f"Warning: Mismatch between number of actions ({len(solution_obj.actions)}) "
+                    f"and states ({len(solution_obj.states)}) for problem starting with: {problem_state}")
+                # Decide how to handle - return None, partial dict, or try to proceed?
+                # Let's try to proceed with available actions.
+                num_steps_to_process = min(len(solution_obj.actions), len(solution_obj.states) - 1)
+            else:
+                num_steps_to_process = len(solution_obj.actions)
+
+
+            for i in range(num_steps_to_process):
+                action_obj = solution_obj.actions[i]
+                next_state = solution_obj.states[i+1]
+
+                # Use the __str__ representation of the action object
+                action_str = str(action_obj)
+
+                solution_steps.append({
+                    "state": next_state,
+                    "action": action_str
+                })
+
+            # Construct the final dictionary
+            result_dict = {
+                "problem": problem_state,
+                "solution": solution_steps
+            }
+
+            return result_dict
+
+
+        axiom_simplicity = {
+        "refl":        10,  # a = a
+        "add0":         9,  # a + 0 = a
+        "sub0":         8,  # a - 0 = a
+        "comm":         8,  # a + b = b + a
+        "mul1":         7,  # a * 1 = a
+        "assoc":        7,  # (a + b) + c = a + (b + c)
+        "div1":         6,  # a / 1 = a
+        "add":          6,  # basic addition definition
+        "sub":          6,  # basic subtraction definition
+        "mul":          6,  # basic multiplication definition
+        "div":          6,  # basic division definition
+        "zero_div":     5,  # 0 / a = 0
+        "dist":         5,  # a(b + c) = ab + ac
+        "mul0":         4,  # a * 0 = 0
+        "sub_comm":     4,  # a - b = −(b - a)
+        "div_self":     3,  # a / a = 1 (a≠0)
+        "subsub":       3,  # a - (b - c) = a - b + c
+        "sub_self":     2,  # a - a = 0
+        "eval":         1   # context‑dependent evaluation/simplification
+        }
+        axioms= [
+            "refl",
+            "comm",
+            "assoc",
+            "dist",
+            "sub_comm",
+            "eval",
+            "add0",
+            "sub0",
+            "mul1",
+            "div1",
+            "div_self",
+            "sub_self",
+            "subsub",
+            "zero_div",
+            "add",
+            "mul0",
+            "sub",
+            "mul",
+            "div"
+        ]
+        enc_abs=[]
+        abs_to_pos={}
+        
+        def get_simplicity(self,abstraction):
+            simpl = 0
+            for ax in abstraction:
+                simpl += self.axiom_simplicity[ax]
+            return simpl
+        def __init__(self,cur_axioms):
+            print("************* ",cur_axioms)
+            cur=[]
+            for i in cur_axioms:
+                cur.append(tuple(str(i.__str__()).split('~')))
+            cur_axioms=cur
+            super().__init__()
+            # observation is a binary mask of length = #abstractions + 1 (terminate bit)
+            self.cur_axioms=cur_axioms
+            # print(cur_axioms)
+            for k in range(1, 3):
+                for perm in permutations(self.axioms, k):
+                    self.abs_to_pos[(perm)] = len(self.enc_abs)
+                    self.enc_abs.append((perm))
+            dataset=[]
+            print(self.abs_to_pos)
+            for i in range(len(solutions)):
+                dataset.append(self.solution_to_dict(solutions[i]))
+            L=[]
+            for i in range(len(dataset)):
+                l = []
+                fg=0
+                for j in dataset[i]['solution']:
+                    if fg==0:
+                        fg=1
+                        continue
+                    l.append((j['action'].split(' ')[0]))
+                L.append(l)
+            self.L=L
+            self.observation_space = spaces.MultiBinary(len(self.enc_abs) + 1)
+            # actions: pick one abstraction to turn on (or the terminate bit)
+            self.action_space      = spaces.Discrete((len(self.enc_abs) + 1) - 19)
+
+            # precompute global frequencies for each abstraction in enc_abs
+            self.pair_counts = np.zeros(len(self.enc_abs), dtype=int)
+            for soln in self.L:
+                for i in range(len(soln) - 1):
+                    tup = tuple(soln[i : i + 2])
+                    idx = self.abs_to_pos.get(tup)
+                    if idx is not None:
+                        self.pair_counts[idx] += 1
+
+            # RNG
+            self.seed()
+            self.cur_axioms=self.cur_axioms
+            # initial mask
+            self.state = self.reset()
+
+        def seed(self, seed: int = 42):
+            self.np_random, seed = gym.utils.seeding.np_random(seed)
+            return [seed]
+
+        def reset(self):
+            # start with the 19 primitives enabled; the last index is the terminate‐bit
+            mask = np.zeros(len(self.enc_abs) + 1, dtype=bool)
+            mask[:19] = True
+            # print(self.abs_to_pos)
+            for i in (self.cur_axioms):
+                print(i)
+                pos=self.abs_to_pos[i]
+                mask[pos]=True
+            self.state = mask
+            return mask.copy()
+
+        def get_reward(self, state_mask: np.ndarray, action_idx: int) -> float:
+            # constants
+            l1, l2, l3 = 0.1, 0.9, 1
+            # form the new mask and compute size penalty
+            next_mask = state_mask.copy()
+            next_mask[action_idx] = True
+
+            size_penalty = -((next_mask.sum() - 19) * l1)
+            freq_bonus = float(self.pair_counts.dot(next_mask[:len(self.enc_abs)])) * l2
+            simplicity = self.get_simplicity(self.enc_abs[action_idx - 19]) * l3
+
+            # reward = size_penalty + frequency bonus + simplicity
+            return size_penalty + freq_bonus + simplicity
+
+        def step(self, action: int):
+            # translate agent‐action into global index
+            env_a = 19 + action
+
+            # If the bit’s already on (and it’s not the terminate‐bit), punish and end.
+            if env_a != len(self.state) - 1 and self.state[env_a]:
+                return self.state.copy(), -1.0, True, {'invalid_action': True}
+
+            # 1) flip the bit
+            self.state[env_a] = True
+
+            # 2) compute reward on the updated mask
+            reward = self.get_reward(self.state.copy(), env_a)
+
+            # 3) determine if we’re done
+            done = bool(self.state[-1] or self.state.sum() > 30) #! hyper param or max limit
+
+            # 4) return (obs, reward, done, info)
+            return self.state.copy(), reward, done, {'invalid_action': False}
+
+
+    def iter_abstract(self,iter):
+        env = self.EnvQwer(self.cur_axioms)
+        model = PPO(
+            policy="MlpPolicy",
+            env=env,
+            verbose=1,
+            n_steps=1024,
+            batch_size=64,
+            n_epochs=10,
+            learning_rate=1e-4,
+            clip_range=0.1,
+            device="cuda",
+        )
+        model.learn(total_timesteps=iter)
+        obs=env.reset()
+        done=False
+        while not done:
+            action,_=model.predict(obs,deterministic=False)
+            obs,reward,done,info=env.step(action)
+            # print(reward)
+        abstraction=[]
+        for i in range(len(obs)):
+            if(obs[i]):
+                abstraction.append("~".join(env.enc_abs[i]))
+        abs_class=[]
+        for i in abstraction:
+            try:
+                abs_class.append(AxiomSeq.from_string(i))
+            except:
+                abs_class.append(Axiom(i))
+        print(abstraction)
+        return abs_class
+                
 class IAPDTrieLogN(IAPLogN):
     def get_frequencies(self, factor=1, max_len=None):
         frequencies = abs_util.DoubleTrie(accum=True)
@@ -539,7 +800,7 @@ class IAPDTrieLogN(IAPLogN):
 
 
 COMPRESSORS = {"iap": IterAbsPairs, "iap_rand": IAPRandom, "iap_heur": IAPHeuristic,
-               "iap_ent": IAPEntropy, "iap_logn": IAPLogN, "iap_trie": IAPTriePrune, "iap_dtrie": IAPDTrieLogN}
+               "iap_ent": IAPEntropy, "iap_logn": IAPLogN, "iap_trie": IAPTriePrune, "iap_dtrie": IAPDTrieLogN, "ppo":PPO_Learner}
 
 def debug():
     """ Add code here for debugging """
@@ -584,18 +845,18 @@ if __name__ == "__main__":
 
     if args.sol_data is None:
         if args.abs_type == "tree_rel_pos":
-            solutions = abs_util.load_solutions("data/equations-80k-relative.json")
+            solutions = abs_util.load_solutions("data/equations-8k.json")
         else:
             if args.small:
                 solutions = abs_util.load_solutions("data/equations-8k.json")
             else:
-                solutions = abs_util.load_solutions("data/equations-80k.json")
+                solutions = abs_util.load_solutions("data/equations-8k.json")
     elif isinstance(args.sol_data, str):
         with open(args.sol_data, 'r') as f:
             solutions = abs_util.load_solutions(args.sol_data)
     else:
         solutions = args.sol_data
-    _, axioms = abs_util.load_axioms("lemma/equation_axioms.json")
+    _, axioms = abs_util.load_axioms("equation_axioms.json")
     axioms = [Axiom(ax_name) for ax_name in axioms]
 
     if args.test:
@@ -627,6 +888,8 @@ if __name__ == "__main__":
             elif args.file[-4:] == ".pkl":
                 with open(args.file, "wb") as f:
                     pickle.dump(abs_ax, f)
+        print("****************-",abs_ax)
+        print("****************-",axioms)
         print("NUM NEW ABS:", len(abs_ax) - len(axioms))
         if args.abs_type in ["tree_rel_pos", "dfs_idx_rel_pos"] or not args.peek_pos:
             for i in range(len(axioms), len(abs_ax)):
