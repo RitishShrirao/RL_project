@@ -187,11 +187,13 @@ class EnvironmentWithEvaluationProxy:
                         #             'abs_type': 'ax_seq' 
                         #         }
 
-                        env_config['abstractions'] = {
-                            'abs_ax': env_state['rules'],
-                            'abs_type': "ax_seq"  # Default to 'ax_seq'
-                        }
-                                
+                        if (env_state['rules'] is not None and env_state['abs_type_name'] is not None):
+                            # Ensure both rules and type are present
+                            env_config['abstractions'] = {
+                                'abs_ax': env_state['rules'],
+                                'abs_type': env_state['abs_type_name']  # Use the loaded type name
+                            }
+
                         self.environment = Environment.from_config(env_config)
 
                         if hasattr(self.environment, 'next_seed') and env_state['next_seed'] is not None:
