@@ -22,6 +22,8 @@ import json
 from collections import defaultdict
 from dataclasses import dataclass
 import heapq
+import wandb
+from wandb.integration.sb3 import WandbCallback
 
 import itertools
 
@@ -448,247 +450,312 @@ class AbsDTrieHeapElt:
 from itertools import permutations
 
 
-
 class PPO_Learner(Compress):
 
     def __init__(self, solutions: list[Solution], cur_axioms: list, config: dict):
         super().__init__(solutions, cur_axioms, config)
-        self.cur_axioms=cur_axioms
+        self.cur_axioms = cur_axioms
+        # self.solutions is inherited from Compress and available here
 
     class EnvQwer(gym.Env):
-        
-        def solution_to_dict(self,solution_obj: Solution) :
-            if not isinstance(solution_obj, Solution) or not solution_obj.states:
-                # Handle invalid input or empty solution
-                return None
-
-            # The 'problem' is the initial state
-            problem_state = solution_obj.states[0]
-
-            # Build the list of solution steps
-            solution_steps = []
-
-            # Add the initial state with "assumption" action
-            solution_steps.append({
-                "state": problem_state,
-                "action": "assumption"
-            })
-
-            # Add the subsequent states and actions
-            # Ensure the number of actions matches states length - 1
-            if len(solution_obj.actions) != len(solution_obj.states) - 1:
-                print(f"Warning: Mismatch between number of actions ({len(solution_obj.actions)}) "
-                    f"and states ({len(solution_obj.states)}) for problem starting with: {problem_state}")
-                # Decide how to handle - return None, partial dict, or try to proceed?
-                # Let's try to proceed with available actions.
-                num_steps_to_process = min(len(solution_obj.actions), len(solution_obj.states) - 1)
-            else:
-                num_steps_to_process = len(solution_obj.actions)
-
-
-            for i in range(num_steps_to_process):
-                action_obj = solution_obj.actions[i]
-                next_state = solution_obj.states[i+1]
-
-                # Use the __str__ representation of the action object
-                action_str = str(action_obj)
-
-                solution_steps.append({
-                    "state": next_state,
-                    "action": action_str
-                })
-
-            # Construct the final dictionary
-            result_dict = {
-                "problem": problem_state,
-                "solution": solution_steps
-            }
-
-            return result_dict
-
+        # Define class variables if they are static or initialized in __init__
+        # axiom_simplicity, axioms, enc_abs, abs_to_pos might be better as instance variables
+        # if they can change per instance or depend on __init__ args.
+        # For now, keeping them as they were, but this is a point of attention.
 
         axiom_simplicity = {
-        "refl":        10,  # a = a
-        "add0":         9,  # a + 0 = a
-        "sub0":         8,  # a - 0 = a
-        "comm":         8,  # a + b = b + a
-        "mul1":         7,  # a * 1 = a
-        "assoc":        7,  # (a + b) + c = a + (b + c)
-        "div1":         6,  # a / 1 = a
-        "add":          6,  # basic addition definition
-        "sub":          6,  # basic subtraction definition
-        "mul":          6,  # basic multiplication definition
-        "div":          6,  # basic division definition
-        "zero_div":     5,  # 0 / a = 0
-        "dist":         5,  # a(b + c) = ab + ac
-        "mul0":         4,  # a * 0 = 0
-        "sub_comm":     4,  # a - b = −(b - a)
-        "div_self":     3,  # a / a = 1 (a≠0)
-        "subsub":       3,  # a - (b - c) = a - b + c
-        "sub_self":     2,  # a - a = 0
-        "eval":         1   # context‑dependent evaluation/simplification
+            "refl": 10, "add0": 9, "sub0": 8, "comm": 8, "mul1": 7, "assoc": 7, "div1": 6, "add": 6, "sub": 6, "mul": 6, "div": 6, "zero_div": 5, "dist": 5, "mul0": 4, "sub_comm": 4, "div_self": 3, "subsub": 3, "sub_self": 2, "eval": 1
         }
-        axioms= [
-            "refl",
-            "comm",
-            "assoc",
-            "dist",
-            "sub_comm",
-            "eval",
-            "add0",
-            "sub0",
-            "mul1",
-            "div1",
-            "div_self",
-            "sub_self",
-            "subsub",
-            "zero_div",
-            "add",
-            "mul0",
-            "sub",
-            "mul",
-            "div"
+        # This 'axioms' list seems to be a fixed list of base axiom names,
+        # distinct from 'cur_axioms' passed to the EnvQwer constructor.
+        base_axioms_names = [
+            "refl", "comm", "assoc", "dist", "sub_comm", "eval", "add0", "sub0", "mul1", "div1",
+            "div_self", "sub_self", "subsub", "zero_div", "add", "mul0", "sub", "mul", "div"
         ]
-        enc_abs=[]
-        abs_to_pos={}
-        
-        def get_simplicity(self,abstraction):
-            simpl = 0
-            for ax in abstraction:
-                simpl += self.axiom_simplicity[ax]
-            return simpl
-        def __init__(self,cur_axioms):
-            print("************* ",cur_axioms)
-            cur=[]
-            for i in cur_axioms:
-                cur.append(tuple(str(i.__str__()).split('~')))
-            cur_axioms=cur
+
+        def solution_to_dict(self, solution_obj: Solution) :
+            # Assuming Solution and Step objects have __str__ methods
+            # and Step has a 'name' attribute or similar for the action string.
+            # This is a placeholder based on typical structures.
+            # You'll need to adapt it if your Solution/Step structure is different.
+            action_sequence = []
+            for step in solution_obj.actions: # Assuming solution_obj.actions is a list of Step objects
+                action_sequence.append(str(step)) # Or step.name, or however the action is represented
+            
+            return {
+                "problem": str(solution_obj.states[0]), # Assuming first state is the problem
+                "solution": action_sequence
+            }
+
+        def get_simplicity(self, abstraction_tuple): # Renamed from 'abstraction' to avoid conflict
+            # abstraction_tuple is expected to be a tuple of axiom strings (e.g., ('add', 'comm'))
+            score = 0
+            for ax_name in abstraction_tuple:
+                score += self.axiom_simplicity.get(ax_name, 0) # Default to 0 if axiom not in map
+            return score
+
+        # Added 'solutions_data' to the constructor
+        def __init__(self, cur_axioms_list_of_objects, solutions_data: list[Solution]):
             super().__init__()
-            # observation is a binary mask of length = #abstractions + 1 (terminate bit)
-            self.cur_axioms=cur_axioms
-            # print(cur_axioms)
-            for k in range(1, 3):
-                for perm in permutations(self.axioms, k):
-                    self.abs_to_pos[(perm)] = len(self.enc_abs)
-                    self.enc_abs.append((perm))
-            dataset=[]
-            print(self.abs_to_pos)
-            for i in range(len(solutions)):
-                dataset.append(self.solution_to_dict(solutions[i]))
-            L=[]
-            for i in range(len(dataset)):
-                l = []
-                fg=0
-                for j in dataset[i]['solution']:
-                    if fg==0:
-                        fg=1
-                        continue
-                    l.append((j['action'].split(' ')[0]))
-                L.append(l)
-            self.L=L
-            self.observation_space = spaces.MultiBinary(len(self.enc_abs) + 1)
-            # actions: pick one abstraction to turn on (or the terminate bit)
-            self.action_space      = spaces.Discrete((len(self.enc_abs) + 1) - 19)
+            # print("************* PPO_Learner.EnvQwer cur_axioms_list_of_objects:", cur_axioms_list_of_objects)
+            
+            # Convert Axiom objects to string tuples for internal use if needed
+            self.cur_axioms_str_tuples = []
+            for ax_obj in cur_axioms_list_of_objects:
+                # Assuming Axiom object can be converted to a string tuple representation
+                # This might need adjustment based on Axiom's actual structure
+                # For example, if ax_obj.rules gives a list of rule names:
+                if hasattr(ax_obj, 'rules') and isinstance(ax_obj.rules, (list, tuple)):
+                    self.cur_axioms_str_tuples.append(tuple(str(r) for r in ax_obj.rules))
+                else: # Fallback to __str__ and splitting, as in original
+                    self.cur_axioms_str_tuples.append(tuple(str(ax_obj).split('~')))
 
-            # precompute global frequencies for each abstraction in enc_abs
-            self.pair_counts = np.zeros(len(self.enc_abs), dtype=int)
-            for soln in self.L:
-                for i in range(len(soln) - 1):
-                    tup = tuple(soln[i : i + 2])
-                    idx = self.abs_to_pos.get(tup)
-                    if idx is not None:
-                        self.pair_counts[idx] += 1
+            self.enc_abs = [] # List of abstraction tuples (sequences of axiom names)
+            self.abs_to_pos = {} # Map from abstraction tuple to its index in enc_abs
 
-            # RNG
-            self.seed()
-            self.cur_axioms=self.cur_axioms
-            # initial mask
-            self.state = self.reset()
+            # Populate enc_abs and abs_to_pos using base_axioms_names or cur_axioms_str_tuples
+            # The original code used self.axioms, which was the static list.
+            # If abstractions should be formed from cur_axioms:
+            # source_for_perms = self.cur_axioms_str_tuples # if perms are from current rule set
+            # Or, if perms are always from the base set of axiom names:
+            source_for_perms = [(name,) for name in self.base_axioms_names] # Treat base axioms as length-1 tuples
 
-        def seed(self, seed: int = 42):
+            for k in range(1, 3): # Max length of abstractions to consider (e.g., 1 or 2)
+                for perm_tuple in permutations(source_for_perms, k):
+                    # perm_tuple will be like ((('refl',), ('comm',)),) if k=2 and source_for_perms has tuples
+                    # We need to flatten it to a single tuple of strings
+                    flattened_perm = []
+                    for item_tuple in perm_tuple:
+                        flattened_perm.extend(item_tuple)
+                    final_perm_tuple = tuple(flattened_perm)
+                    
+                    if final_perm_tuple not in self.abs_to_pos:
+                        self.abs_to_pos[final_perm_tuple] = len(self.enc_abs)
+                        self.enc_abs.append(final_perm_tuple)
+            
+            # print("************* PPO_Learner.EnvQwer self.enc_abs:", self.enc_abs)
+
+            self.observation_space = spaces.MultiBinary(len(self.enc_abs) + 1) # +1 for terminate
+            self.action_space = spaces.Discrete(len(self.enc_abs) + 1) # +1 for terminate action
+
+            self.dataset = []
+            # Use the passed 'solutions_data'
+            if solutions_data:
+                for i in range(len(solutions_data)):
+                    self.dataset.append(self.solution_to_dict(solutions_data[i]))
+            
+            self.current_problem_idx = 0
+            self.current_actions_mask = np.zeros(len(self.enc_abs) + 1, dtype=np.int8)
+            self.current_solution_actions = []
+            self.current_step_in_solution = 0
+
+            self.seed() # Initialize random seed
+
+        def seed(self, seed: int = None): # Allow None for random seed
             self.np_random, seed = gym.utils.seeding.np_random(seed)
             return [seed]
 
         def reset(self):
-            # start with the 19 primitives enabled; the last index is the terminate‐bit
-            mask = np.zeros(len(self.enc_abs) + 1, dtype=bool)
-            mask[:19] = True
-            # print(self.abs_to_pos)
-            for i in (self.cur_axioms):
-                print(i)
-                pos=self.abs_to_pos[i]
-                mask[pos]=True
-            self.state = mask
-            return mask.copy()
+            if not self.dataset:
+                # Handle empty dataset: return a zero observation
+                # print("Warning: PPO_Learner.EnvQwer dataset is empty during reset.")
+                self.current_actions_mask = np.zeros(len(self.enc_abs) + 1, dtype=np.int8)
+                self.current_actions_mask[-1] = 1 # Allow termination
+                return self.current_actions_mask.copy()
+
+            self.current_problem_idx = self.np_random.integers(len(self.dataset))
+            problem_data = self.dataset[self.current_problem_idx]
+            
+            # Assuming problem_data["solution"] is a list of action strings/tuples
+            # that need to be mapped to indices in self.enc_abs
+            self.current_solution_actions = []
+            for action_repr in problem_data.get("solution", []):
+                # This conversion depends on how actions are stored in solution_to_dict
+                # and how they map to self.abs_to_pos keys.
+                # Assuming action_repr is a tuple of strings like ('add', 'comm')
+                action_tuple = tuple(action_repr) if isinstance(action_repr, list) else action_repr
+                if isinstance(action_repr, str): # If it's a single axiom string
+                    action_tuple = (action_repr,)
+
+                if action_tuple in self.abs_to_pos:
+                    self.current_solution_actions.append(self.abs_to_pos[action_tuple])
+                # else:
+                    # print(f"Warning: Action {action_tuple} from solution not in abs_to_pos map.")
+
+            self.current_step_in_solution = 0
+            
+            self.current_actions_mask = np.zeros(len(self.enc_abs) + 1, dtype=np.int8)
+            if self.current_step_in_solution < len(self.current_solution_actions):
+                action_idx = self.current_solution_actions[self.current_step_in_solution]
+                self.current_actions_mask[action_idx] = 1
+            self.current_actions_mask[-1] = 1 # Always allow termination
+            
+            return self.current_actions_mask.copy()
 
         def get_reward(self, state_mask: np.ndarray, action_idx: int) -> float:
-            # constants
-            l1, l2, l3 = 0.1, 0.9, 1
-            # form the new mask and compute size penalty
-            next_mask = state_mask.copy()
-            next_mask[action_idx] = True
+            # state_mask is the current observation (actions taken so far in the episode)
+            # action_idx is the ID of the chosen abstraction/action
+            
+            # If terminate action is chosen
+            if action_idx == len(self.enc_abs): # Terminate action
+                if self.current_step_in_solution >= len(self.current_solution_actions):
+                    return 10.0  # Successfully completed the sequence
+                else:
+                    return -10.0 # Terminated too early
 
-            size_penalty = -((next_mask.sum() - 19) * l1)
-            freq_bonus = float(self.pair_counts.dot(next_mask[:len(self.enc_abs)])) * l2
-            simplicity = self.get_simplicity(self.enc_abs[action_idx - 19]) * l3
-
-            # reward = size_penalty + frequency bonus + simplicity
-            return size_penalty + freq_bonus + simplicity
+            # If the chosen action is the correct next action in the solution
+            if self.current_step_in_solution < len(self.current_solution_actions) and \
+               action_idx == self.current_solution_actions[self.current_step_in_solution]:
+                # Reward based on simplicity of the chosen abstraction
+                chosen_abstraction_tuple = self.enc_abs[action_idx]
+                simplicity_score = self.get_simplicity(chosen_abstraction_tuple)
+                return float(simplicity_score)  # Positive reward for correct action
+            else:
+                return -1.0 # Penalty for incorrect action
 
         def step(self, action: int):
-            # translate agent‐action into global index
-            env_a = 19 + action
+            # action is the index of the chosen abstraction from self.enc_abs, or terminate action
+            
+            reward = self.get_reward(self.current_actions_mask, action)
+            done = False
 
-            # If the bit’s already on (and it’s not the terminate‐bit), punish and end.
-            if env_a != len(self.state) - 1 and self.state[env_a]:
-                return self.state.copy(), -1.0, True, {'invalid_action': True}
+            # Update current_actions_mask based on the action taken
+            # For PPO, the observation is often the state. Here, the "state"
+            # is which actions have been taken to reconstruct the solution.
+            # A simple way is to set the bit for the action taken.
+            if action < len(self.enc_abs): # Not terminate action
+                 # self.current_actions_mask[action] = 1 # Mark action as taken - this might be too simple
+                                                     # The observation should reflect the current step in the sequence
+                self.current_step_in_solution += 1
+            else: # Terminate action
+                done = True
 
-            # 1) flip the bit
-            self.state[env_a] = True
+            # Prepare next observation
+            next_obs_mask = np.zeros(len(self.enc_abs) + 1, dtype=np.int8)
+            if not done and self.current_step_in_solution < len(self.current_solution_actions):
+                next_action_idx = self.current_solution_actions[self.current_step_in_solution]
+                next_obs_mask[next_action_idx] = 1 # Highlight the next correct action
+            
+            if self.current_step_in_solution >= len(self.current_solution_actions) and not done:
+                # If all solution steps are done, but not terminated, force termination observation
+                done = True # Or allow only termination
 
-            # 2) compute reward on the updated mask
-            reward = self.get_reward(self.state.copy(), env_a)
+            next_obs_mask[-1] = 1 # Always allow termination in the next step
+            
+            self.current_actions_mask = next_obs_mask # Update for the next call to get_reward if needed
 
-            # 3) determine if we’re done
-            done = bool(self.state[-1] or self.state.sum() > 30) #! hyper param or max limit
+            return self.current_actions_mask.copy(), reward, done, {} # {} is info dict
 
-            # 4) return (obs, reward, done, info)
-            return self.state.copy(), reward, done, {'invalid_action': False}
+    def iter_abstract(self, num_total_timesteps): # Renamed 'iter' to 'num_total_timesteps'
+        if not self.solutions:
+            print("PPO_Learner: No solutions provided to learn from. Skipping PPO training.")
+            return self.cur_axioms # Return current axioms if no solutions
+
+        # Pass self.solutions to EnvQwer
+        env = self.EnvQwer(self.cur_axioms, self.solutions)
+
+        wandb_callback = WandbCallback(
+            gradient_save_freq=100,
+            verbose=2
+        )
+        
+        # Check if environment has any encodable abstractions
+        if not env.enc_abs:
+            print("PPO_Learner.EnvQwer has no encodable abstractions (env.enc_abs is empty). Skipping PPO training.")
+            return self.cur_axioms
 
 
-    def iter_abstract(self,iter):
-        env = self.EnvQwer(self.cur_axioms)
         model = PPO(
             policy="MlpPolicy",
             env=env,
             verbose=1,
-            n_steps=1024,
-            batch_size=64,
-            n_epochs=10,
-            learning_rate=1e-4,
-            clip_range=0.1,
-            device="cuda",
+            n_steps=1024, # Or make configurable
+            batch_size=64, # Or make configurable
+            n_epochs=10,   # Or make configurable
+            learning_rate=1e-4, # Or make configurable
+            clip_range=0.1,     # Or make configurable
+            device="cuda" if torch.cuda.is_available() else "cpu", # Check for cuda
         )
-        model.learn(total_timesteps=iter)
-        obs=env.reset()
-        done=False
-        while not done:
-            action,_=model.predict(obs,deterministic=False)
-            obs,reward,done,info=env.step(action)
-            # print(reward)
-        abstraction=[]
-        for i in range(len(obs)):
-            if(obs[i]):
-                abstraction.append("~".join(env.enc_abs[i]))
-        abs_class=[]
-        for i in abstraction:
-            try:
-                abs_class.append(AxiomSeq.from_string(i))
-            except:
-                abs_class.append(Axiom(i))
-        print(abstraction)
-        return abs_class
-                
+
+        model.learn(total_timesteps=num_total_timesteps, callback=wandb_callback)
+        # model.learn(total_timesteps=num_total_timesteps)
+        
+        # After learning, determine which abstractions were chosen/reinforced.
+        # This part is crucial and needs a strategy.
+        # For example, analyze the PPO policy or observe its behavior on the training data.
+        # The original code had a simple rollout and collected chosen actions.
+
+        # Simple rollout to see what the agent picks:
+        # This is a placeholder for a more sophisticated way to extract "learned" abstractions.
+        
+        learned_abstractions_indices = set()
+        if env.dataset: # Only attempt rollout if there's data
+            for _ in range(min(len(env.dataset), 10)): # Rollout on a few problems
+                obs = env.reset()
+                done = False
+                ep_actions = []
+                while not done:
+                    action_indices, _states = model.predict(obs, deterministic=True)
+                    # model.predict might return a single action index or a list if env is vectorized
+                    action_idx = action_indices.item() if isinstance(action_indices, np.ndarray) else action_indices
+                    
+                    if action_idx < len(env.enc_abs): # If not terminate action
+                        ep_actions.append(action_idx)
+                    obs, reward, done, info = env.step(action_idx)
+                learned_abstractions_indices.update(ep_actions)
+        
+        # Convert chosen indices back to Abstraction/Axiom objects
+        # The new abstractions should be added to self.cur_axioms
+        # This requires knowing the AbsType for creating new Abstraction objects.
+        # self.AbsType is available from the parent Compress class.
+
+        final_abstractions_objects = list(self.cur_axioms) # Start with existing axioms
+        
+        # print(f"PPO Learned abstraction indices: {learned_abstractions_indices}")
+        # print(f"PPO Env enc_abs: {env.enc_abs}")
+
+        for idx in learned_abstractions_indices:
+            if 0 <= idx < len(env.enc_abs):
+                abs_tuple = env.enc_abs[idx] # This is a tuple of strings, e.g., ('add', 'comm')
+                # Create a new Abstraction object.
+                # This assumes self.AbsType can be initialized from a sequence of rule names.
+                try:
+                    # The constructor for Abstraction might vary.
+                    # If it takes a list of rule objects or rule names:
+                    # Option 1: If AbsType takes rule names directly
+                    new_abs_obj = self.AbsType(rules=list(abs_tuple)) 
+                    # Option 2: If AbsType needs Axiom objects for each rule name
+                    # rule_objects = [Axiom(name) for name in abs_tuple] # Assuming Axiom can be made from name
+                    # new_abs_obj = self.AbsType(rules=rule_objects)
+                    
+                    # Add score or frequency if your Abstraction objects store them
+                    # new_abs_obj.score = env.get_simplicity(abs_tuple) # Example
+                    
+                    # Avoid adding duplicates if they are already in cur_axioms or added
+                    is_duplicate = False
+                    for existing_ax in final_abstractions_objects:
+                        # This comparison logic depends heavily on how Axiom/Abstraction equality is defined.
+                        # If they have a 'rules' attribute that is a list/tuple of strings:
+                        if hasattr(existing_ax, 'rules') and tuple(str(r) for r in existing_ax.rules) == abs_tuple:
+                            is_duplicate = True
+                            break
+                        # Fallback to string comparison if rules attribute isn't standard
+                        elif str(existing_ax) == "~".join(abs_tuple): # Heuristic
+                            is_duplicate = True
+                            break
+                    
+                    if not is_duplicate:
+                        final_abstractions_objects.append(new_abs_obj)
+                except Exception as e:
+                    print(f"Error creating/adding abstraction object for {abs_tuple}: {e}")
+
+
+        # print(f"PPO Final abstractions: {[str(a) for a in final_abstractions_objects]}")
+        return final_abstractions_objects
+
+
+
+
 class IAPDTrieLogN(IAPLogN):
     def get_frequencies(self, factor=1, max_len=None):
         frequencies = abs_util.DoubleTrie(accum=True)

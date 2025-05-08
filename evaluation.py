@@ -172,20 +172,25 @@ class EnvironmentWithEvaluationProxy:
                             'domain': env_state['default_domain'],
                             'environment_url': self.config.get('environment_url', None), # Get URL from proxy's config
                         }
-                        if env_state['rules'] is not None:
-                            # Ensure both rules and type are present
-                            if 'abs_type_name' in env_state and env_state['abs_type_name'] is not None:
-                                env_config['abstractions'] = {
-                                    'abs_ax': env_state['rules'],
-                                    'abs_type': env_state['abs_type_name'] # Use the loaded type name
-                                }
-                            else:
-                                print("Warning: Abstraction type not found in checkpoint's environment state. Defaulting to 'ax_seq'.")
-                                # --- Default to 'ax_seq' ---
-                                env_config['abstractions'] = {
-                                    'abs_ax': env_state['rules'],
-                                    'abs_type': 'ax_seq' 
-                                }
+                        # if env_state['rules'] is not None:
+                        #     # Ensure both rules and type are present
+                        #     if 'abs_type_name' in env_state and env_state['abs_type_name'] is not None:
+                        #         env_config['abstractions'] = {
+                        #             'abs_ax': env_state['rules'],
+                        #             'abs_type': env_state['abs_type_name'] # Use the loaded type name
+                        #         }
+                        #     else:
+                        #         print("Warning: Abstraction type not found in checkpoint's environment state. Defaulting to 'ax_seq'.")
+                        #         # --- Default to 'ax_seq' ---
+                        #         env_config['abstractions'] = {
+                        #             'abs_ax': env_state['rules'],
+                        #             'abs_type': 'ax_seq' 
+                        #         }
+
+                        env_config['abstractions'] = {
+                            'abs_ax': env_state['rules'],
+                            'abs_type': "ax_seq"  # Default to 'ax_seq'
+                        }
                                 
                         self.environment = Environment.from_config(env_config)
 
@@ -483,7 +488,6 @@ class EnvironmentWithEvaluationProxy:
             # Define checkpoint path using the current subrun_index and n_checkpoints
             checkpoint_filename = f'{self.subrun_index}-{self.n_checkpoints-1}.pt' if self.subrun_index is not None else f'{self.n_checkpoints-1}.pt'
             specific_checkpoint_path = os.path.join(self.checkpoint_dir, checkpoint_filename)
-            # torch.save(self.agent.q_function, specific_checkpoint_path) # Save just the model weights
 
             # Save the overall training state separately
             training_state_path = os.path.join(self.checkpoint_dir, 'training-state.pt')
