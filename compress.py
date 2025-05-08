@@ -549,6 +549,69 @@ class PPO_Learner(Compress):
             "mul",
             "div"
         ]
+
+        # Assign each axiom to a conceptual category
+        categories = {
+            "refl":      "equality",
+            "comm":      "property",
+            "assoc":     "property",
+            "dist":      "property",
+            "sub_comm":  "property",
+            "subsub":    "property",
+            "eval":      "definition",
+            "add":       "definition",
+            "sub":       "definition",
+            "mul":       "definition",
+            "div":       "definition",
+            "add0":      "identity",
+            "sub0":      "identity",
+            "mul1":      "identity",
+            "div1":      "identity",
+            "mul0":      "zero",
+            "zero_div":  "zero",
+            "div_self":  "inverse",
+            "sub_self":  "inverse"
+        }
+        
+        # How similar each pair of categories is, on a 1–10 scale
+        category_similarity = {
+            ("equality",  "equality"):  10,
+            ("identity",  "identity"):  10,
+            ("zero",      "zero"):      10,
+            ("inverse",   "inverse"):   10,
+            ("definition","definition"):10,
+            ("property",  "property"):  10,
+        
+            # fairly close concepts
+            ("identity",   "definition"):  8,
+            ("identity",   "inverse"):     8,
+            ("zero",       "inverse"):     8,
+        
+            # moderately related
+            ("identity",   "zero"):        7,
+            ("definition", "property"):    7,
+            ("definition", "inverse"):     6,
+            ("zero",       "definition"):  6,
+            ("property",   "inverse"):     5,
+            ("zero",       "property"):    5,
+        
+            # distant concepts involving equality
+            ("equality",   "identity"):    5,
+            ("equality",   "definition"):  4,
+            ("equality",   "property"):    4,
+            ("equality",   "inverse"):     3,
+            ("equality",   "zero"):        3,
+        }
+        
+        # Build the pairwise similarity dict (171 entries)
+        axiom_similarity = {}
+        for a, b in itertools.combinations(self.axioms, 2):
+            ca, cb = self.categories[a], self.categories[b]
+            score = self.category_similarity.get((ca, cb),
+                     self.category_similarity.get((cb, ca), 1))
+            self.axiom_similarity[(a, b)] = score
+
+        
         enc_abs=[]
         abs_to_pos={}
         
@@ -557,6 +620,20 @@ class PPO_Learner(Compress):
             for ax in abstraction:
                 simpl += self.axiom_simplicity[ax]
             return simpl
+
+        def get_similarity(abstraction):
+
+            # Single axiom
+            if len(abstraction) == 1:
+                return 10
+        
+            # Assuming two axioms in the abstraction
+            try:
+              return self.axiom_similarity[abstraction]
+                
+            except KeyError:
+              return self.axiom_similarity[abstraction[::-1]]
+
         def __init__(self,cur_axioms):
             print("************* ",cur_axioms)
             cur=[]
@@ -623,7 +700,7 @@ class PPO_Learner(Compress):
 
         def get_reward(self, state_mask: np.ndarray, action_idx: int) -> float:
             # constants
-            l1, l2, l3 = 0.1, 0.9, 1
+            l1, l2, l3, l4 = 1, 0.9, 1, 1.5
             # form the new mask and compute size penalty
             next_mask = state_mask.copy()
             next_mask[action_idx] = True
@@ -631,9 +708,10 @@ class PPO_Learner(Compress):
             size_penalty = -((next_mask.sum() - 19) * l1)
             freq_bonus = float(self.pair_counts.dot(next_mask[:len(self.enc_abs)])) * l2
             simplicity = self.get_simplicity(self.enc_abs[action_idx - 19]) * l3
+            similarity = self.get_similarity(self.enc_abs[action_idx - 19]) * l4
 
-            # reward = size_penalty + frequency bonus + simplicity
-            return size_penalty + freq_bonus + simplicity
+            # reward = size_penalty + frequency bonus + max(similarity, simplicity)
+            return size_penalty + freq_bonus + max(similarity, simplicity)
 
         def step(self, action: int):
             # translate agent‐action into global index
@@ -650,7 +728,7 @@ class PPO_Learner(Compress):
             reward = self.get_reward(self.state.copy(), env_a)
 
             # 3) determine if we’re done
-            done = bool(self.state[-1] or self.state.sum() > 30) #! hyper param or max limit
+            done = bool(self.state[-1] or self.state.sum() > 45) #! hyper param or max limit
 
             # 4) return (obs, reward, done, info)
             return self.state.copy(), reward, done, {'invalid_action': False}
