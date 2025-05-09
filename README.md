@@ -48,10 +48,9 @@ Incorporating abstractions into the ConPoLe environment allows the agent to take
 Currently, there are three kinds of abstractions that have been implemented:
 * `ax_seq`: abstractions that only specify a sequence of axioms. 
 * `dfs_idx_rel_pos`: Abstractions that incorporate relative position information using the old ConPoLe DFS indexing (file ending in `-pos.json`). 
-* `tree_rel_pos`: Abstractions that specify a sequence of axioms and additionally incorporate information about axioms' relative position of application within the expression tree. 
-The first two kinds can no longer be incorporated into the ConPoLe environment since their interfaces are outdated.
-
-Example files containing abstractions have been placed under `mathemematical-abstractions/abstractions`. Currently, only those files ending in `-tree.json` (`tree_rel_pos` abstractions) are guaranteed to work with the ConPoLe environment.
+* `tree_rel_pos`: Abstractions that specify a sequence of axioms and additionally incorporate information about axioms' relative position of application within the expression tree.
+  
+Example files containing abstractions have been placed under `mathemematical-abstractions/abstractions`.
 
 To incorporate `tree_rel_pos` abstractions into the ConPoLe environment, specify
 ```
@@ -60,16 +59,16 @@ To incorporate `tree_rel_pos` abstractions into the ConPoLe environment, specify
   "tree_idx": true
 }
 ```
-in the config file passed to `agent.py` (see below). (*Note:* The key `tree_idx` refers to `tree_rel_pos` abstractions, whereas the key `consider_pos` refers to `dfs_idx_rel_pos` abstractions. Specifying neither option would use `ax_seq` abstractions.)
+in the config file passed to `agent_new.py` (see below). (*Note:* The key `tree_idx` refers to `tree_rel_pos` abstractions, whereas the key `consider_pos` refers to `dfs_idx_rel_pos` abstractions. Specifying neither option would use `ax_seq` abstractions.)
 
 ## Learning agents
 
 Several learning algorithms are implemented to learn the domains.
-They are all in `agent.py`, which is a file that also implements evaluation.
+They are all in `agent_new.py`, which is a file that also implements evaluation.
 
-To perform training and evaluation, we use `agent.py`. Run the following command:
+To perform training and evaluation, we use `agent_new.py`. Run the following command:
 ```
-python agent.py [-h] --config CONFIG [--learn] [--experiment] [--eval] [--eval-checkpoints] [--debug] [--range RANGE] [--gpu GPU]
+python agent_new.py [-h] --config CONFIG [--learn] [--experiment] [--eval] [--eval-checkpoints] [--debug] [--range RANGE] [--gpu GPU]
 ```
 
 - `--config`: Path to configuration file, or inline JSON. A template configuration file for the `--learn` mode is given in [`template_config.txt`](template_config.txt). (Note: The template currently does not comprehensively list all possible configurations.)
@@ -82,6 +81,12 @@ python agent.py [-h] --config CONFIG [--learn] [--experiment] [--eval] [--eval-c
 - `--gpu GPU`: Which GPU to use (e.g. `"cuda:0"`); defaults to CPU if none is specified.
 
 `--learn` is used to run a single experiment (one agent on one domain), whereas `--experiment` is used to run a batch of experiments (e.g., multiple agents on multiple domains with multiple runs in each configuration). You almost surely want to use `--experiment` since it is more general, even if to perform a single run.
+
+**NOTE: If wandb is not set-up, comment out the following lines in `evaluation.py` and `agent_new.py`:**
+
+*   `wandb.log(...)` (all instances)
+*   `wandb.init(...)` (all instances)
+*   If using PPO abstractions, use `model.learn(total_timesteps=num_total_timesteps)` instead of `model.learn(total_timesteps=num_total_timesteps, callback=wandb_callback)` inside the iter_abstract method of the PPO_Learner class in `compress.py`.
 
 In this abstraction project, we will always be focusing on the `equations-hard` domain and the `NCE` (ConPoLe) learning agent. Here is an example complete config file to run `--learn` (single run) without abstractions (i.e., ConPoLe):
 
@@ -223,5 +228,3 @@ To run ConPoLe without abstraction learning:
 ```
 python agent_new.py --config config_name.json --learn --gpu 0
 ```
-
-NOTE: If wandb is not set-up, comment the lines using wandb.log or wandb.init in evaluation.py and agent_new.py. If using PPO for learning abstractions, use model.learn(total_timesteps=num_total_timesteps) instead of model.learn(total_timesteps=num_total_timesteps, callback=wandb_callback).
