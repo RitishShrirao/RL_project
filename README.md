@@ -88,6 +88,15 @@ python agent_new.py [-h] --config CONFIG [--learn] [--experiment] [--eval] [--ev
 *   `wandb.init(...)` (all instances)
 *   If using PPO abstractions, use `model.learn(total_timesteps=num_total_timesteps)` instead of `model.learn(total_timesteps=num_total_timesteps, callback=wandb_callback)` inside the iter_abstract method of the PPO_Learner class in `compress.py`.
 
+To learn abstractions with a specific config
+```
+python agent_new.py --config config_name.json --learn-abstract --gpu 0
+```
+To run ConPoLe without abstraction learning:
+```
+python agent_new.py --config config_name.json --learn --gpu 0
+```
+
 In this abstraction project, we will always be focusing on the `equations-hard` domain and the `NCE` (ConPoLe) learning agent. Here is an example complete config file to run `--learn` (single run) without abstractions (i.e., ConPoLe):
 
 ```json
@@ -218,13 +227,4 @@ Here's an example config file learns SeqAbs abstractions with modified ConPoLe:
         "print_every": 10000
     }
 }
-```
-
-To learn abstractions with a specific config
-```
-python agent_new.py --config config_name.json --learn-abstract --gpu 0
-```
-To run ConPoLe without abstraction learning:
-```
-python agent_new.py --config config_name.json --learn --gpu 0
 ```
