@@ -1,6 +1,6 @@
 # Incorporating abstractions into ConPoLe
 
-The learning algorithms are implemented in Python 3.9, using PyTorch. You can install
+The learning algorithms are implemented in Python >=3.9, using PyTorch. You can install
 all Python dependencies using:
 
 ```
@@ -21,6 +21,7 @@ To set them up, follow the steps below:
 
 ```
 $ cd /path/to/socratic-tutor/commoncore
+$ cargo update
 $ cargo build --release
 ```
 
@@ -163,6 +164,7 @@ Here are some additional useful options that can be specified:
 * `"example_solutions"` in agent config: Path to file containing solutions (as list of `Solution` objects of `steps.py`). When specified, the agent will learn from these solutions at the beginning of training. In addition, if `"max_steps"` is not specified in `"eval_environment"`, these are the only examples that the agent will learn from, hence providing the functionality of fine-tuning. An example solution file containing solutions abstracted with `tree_rel_pos` abstractions is located at `mathematical-abstractions/abs_sols/IAP-8k-8len2-tree-1ksol.pkl`.
 
 Here's an example config file learns SeqAbs abstractions with modified ConPoLe:
+For finding abstractions using PPO, use compressor: "ppo" in the below config. (Not recommended as results are not as good as other compressors).
 
 ```json
 {
