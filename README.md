@@ -6,14 +6,6 @@ all Python dependencies using:
 ```
 pip install -r requirements.txt
 ```
-Make sure to also clone the `mathematical-abstractions` submodule while cloning this repository:
-```
-git clone -b abstract git@github.com:uranium11010/socratic-tutor
-cd socratic-tutor/
-git submodule init mathematical-abstractions/
-git submodule update mathematical-abstractions/
-```
-(Note: We won't be using the `variational-item-response-theory-public` submodule, so there's no need to do `git clone --recursive` to clone both submodules.)
 
 ## Educational domains (Rust environments)
 
@@ -91,50 +83,63 @@ python agent.py [-h] --config CONFIG [--learn] [--experiment] [--eval] [--eval-c
 
 `--learn` is used to run a single experiment (one agent on one domain), whereas `--experiment` is used to run a batch of experiments (e.g., multiple agents on multiple domains with multiple runs in each configuration). You almost surely want to use `--experiment` since it is more general, even if to perform a single run.
 
-In this abstraction project, we will always be focusing on the `equations-ct` domain and the `NCE` (ConPoLe) learning agent. Here is an example complete config file to run `--experiment` (single run) without abstractions (i.e., original ConPoLe):
+In this abstraction project, we will always be focusing on the `equations-hard` domain and the `NCE` (ConPoLe) learning agent. Here is an example complete config file to run `--learn` (single run) without abstractions (i.e., ConPoLe):
 
 ```json
 {
-  "experiment_id": "test",
-  "domains": ["equations-ct"],
-  "environment_backend": "Rust",
-  "wandb_project": "test",
-  "gpus": [0],
-  "n_runs": 1,
-  "agents": [
-    {
-      "type": "NCE",
-      "name": "ConPoLe",
-      "n_future_states": 1,
-      "replay_buffer_size": 100000,
-      "max_depth": 30,
-      "beam_size": 10,
-      "initial_depth": 8,
-      "depth_step": 1,
-      "optimize_every": 16,
-      "n_gradient_steps": 128,
-      "keep_optimizer": true,
-      "step_every": 10000,
-      "n_bootstrap_problems": 100,
-      "q_function": {
-        "type": "Bilinear",
-        "char_emb_dim": 64,
-        "hidden_dim": 256,
-        "mlp": true,
-        "lstm_layers": 2
-      }
+    "experiment_id": "eq-hard-similar-sampling",
+    "domains": ["equations-hard"],
+    "environment_backend": "Rust",
+    "environment_url": "127.0.0.1:9876",
+    "wandb_project": "ConPoLe",
+    "resume": "must",
+    "gpus": [0],
+    "n_runs": 1,
+    "agents": [
+        {
+            "type": "NCE",
+            "name": "ConPoLe",
+            "n_future_states": 1,
+            "replay_buffer_size": 100000,
+            "max_depth": 30,
+            "beam_size": 10,
+            "initial_depth": 15,
+            "depth_step": 1,
+            "optimize_every": 8,
+            "n_gradient_steps": 256,
+            "keep_optimizer": true,
+            "step_every": 10000,
+            "n_bootstrap_problems": 100,
+            "bootstrap_from": "InverseLength",
+            "batch_size": 64,
+            
+            "use_global_buffer": true,
+            "global_buffer_size": 1000000,
+            "use_embedding_based_sampling": true,
+            "num_candidate_negatives": 10000,
+            "num_final_negatives": 128,
+            "similarity_to_current": false,
+            
+            "q_function": {
+                "type": "Bilinear",
+                "char_emb_dim": 64,
+                "hidden_dim": 256,
+                "mlp": true,
+                "lstm_layers": 2
+            }
+        }
+    ],
+    "eval_environment": {
+        "evaluate_every": 100000,
+        "eval_config": {
+        "max_steps": 30,
+        "n_problems": 200
+        },
+        "output_root": "output",
+        "max_steps": 10000000,
+        "print_every": 10000,
+        "environment_url": "http://127.0.0.1:9876"
     }
-  ],
-  "eval_environment": {
-    "evaluate_every": 100000,
-    "eval_config": {
-      "max_steps": 30,
-      "n_problems": 200
-    },
-    "output_root": "output",
-    "max_steps": 10000000,
-    "print_every": 10000
-  }
 }
 ```
 
@@ -143,57 +148,80 @@ Here are some additional useful options that can be specified:
 * `"bootstrap_from"` in agent config: The initial bootstrapping strategy for finding solutions at the beginning of training. Default is `RandomQFunction` (i.e., randomly chose next states during search). An alternative is `InverseLength`. Note that boostrapping is disabled if `"load_pretrained"` (load a pretrained model) is specified in `"q_function"` (see below) or "example_solutions" (learn from example solutions) is specified in agent config.
 * `"example_solutions"` in agent config: Path to file containing solutions (as list of `Solution` objects of `steps.py`). When specified, the agent will learn from these solutions at the beginning of training. In addition, if `"max_steps"` is not specified in `"eval_environment"`, these are the only examples that the agent will learn from, hence providing the functionality of fine-tuning. An example solution file containing solutions abstracted with `tree_rel_pos` abstractions is located at `mathematical-abstractions/abs_sols/IAP-8k-8len2-tree-1ksol.pkl`.
 
-Here's an example config file that fine-tunes a pretrained model with 1000 abstracted solutions:
+Here's an example config file learns SeqAbs abstractions with modified ConPoLe:
 
 ```json
 {
-  "experiment_id": "fine_tune",
-  "domain": "equations-ct",
-  "environment_backend": "Rust",
-  "wandb_project": "abs_fine_tune",
-  "abstractions": {
-    "path": "mathematical-abstractions/abstractions/IAP-8k-8len2-tree.json",
-    "tree_idx": true
-  },
-  "agent": {
-    "type": "NCE",
-    "name": "ConPoLe",
-    "n_future_states": 1,
-    "replay_buffer_size": 100000,
-    "max_depth": 30,
-    "beam_size": 10,
-    "initial_depth": 8,
-    "depth_step": 1,
-    "optimize_every": 20,
-    "n_gradient_steps": 128,
-    "keep_optimizer": true,
-    "step_every": 10000,
-    "epsilon": 0.2,
-    "bootstrap_from": "InverseLength",
-    "n_bootstrap_problems": 100,
-    "example_solutions": "mathematical-abstractions/abs_sols/IAP-8k-8len2-tree-1ksol.pkl",
-    "q_function": {
-      "load_pretrained": "pretrained/conpole-equations-ct-good.pt",
-      "type": "Bilinear",
-      "char_emb_dim": 64,
-      "hidden_dim": 256,
-      "mlp": true,
-      "lstm_layers": 2
-    }
-  },
-  "eval_environment": {
-    "evaluate_every": 1000,
-    "eval_config": {
-      "max_steps": 30,
-      "n_problems": 100
+    "experiment_id": "seq-abs-eq-hard-similar-abs-new", 
+    "domain": "equations-hard",
+    "environment_backend": "Rust",
+    "wandb_project": "ConPoLe",
+    "resume": "allow", 
+    "gpus": [0],
+    "n_runs": 1,
+    "iterations": 3, 
+    "compression": { 
+        "compressor": "iap_logn", 
+        "abs_type": "ax_seq",
+        "iter": 1,              
+        "num_abs_sol": 5000,
+        "max_arity": 2
     },
-    "output_root": "output",
-    "print_every": 200
-  }
+    "agent": 
+        {
+            "type": "NCE",
+            "name": "ConPoLe_Abstract", 
+            "num_store_sol": 5000, 
+            "n_future_states": 1,
+            "replay_buffer_size": 100000,
+            "max_depth": 30,
+            "beam_size": 10,
+            "initial_depth": 15, 
+            "depth_step": 1,
+            "optimize_every": 8,
+            "n_gradient_steps": 256,
+            "keep_optimizer": true,
+            "step_every": 10000,
+            "n_bootstrap_problems": 100,
+            "bootstrap_from": "InverseLength",
+            "batch_size": 64,
+
+            "use_global_buffer": true,
+            "global_buffer_size": 1000000,
+            "use_embedding_based_sampling": true,
+            "num_candidate_negatives": 10000,
+            "num_final_negatives": 128,
+            "similarity_to_current": false,
+
+            "q_function": {
+                "type": "Bilinear",
+                "char_emb_dim": 64,
+                "hidden_dim": 256,
+                "mlp": true,
+                "lstm_layers": 2
+            }
+        }
+    ,
+    "eval_environment": {
+        "evaluate_every": 100000,
+        "eval_config": {
+            "max_steps": 30,
+            "n_problems": 200
+        },
+        "output_root": "output",
+        "max_steps": 3000000,
+        "print_every": 10000
+    }
 }
 ```
 
-The folder [config/](config) contains several configuration files. They all use the `--learn` option. In other words, to run a training session with, for example, `abs_config.json`, run the following command:
+To learn abstractions with a specific config
 ```
-python agent.py --learn --config configs/abs_config.json --gpu 0
+python agent_new.py --config config_name.json --learn-abstract --gpu 0
 ```
+To run ConPoLe without abstraction learning:
+```
+python agent_new.py --config config_name.json --learn --gpu 0
+```
+
+NOTE: If wandb is not set-up, comment the lines using wandb.log or wandb.init in evaluation.py and agent_new.py. If using PPO for learning abstractions, use model.learn(total_timesteps=num_total_timesteps) instead of model.learn(total_timesteps=num_total_timesteps, callback=wandb_callback).
