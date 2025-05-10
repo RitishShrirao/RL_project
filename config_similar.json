@@ -1,13 +1,13 @@
 {
     "experiment_id": "eq-hard-similar-sampling",
-    "domains": ["equations-hard"],
+    "domain": "equations-hard",
     "environment_backend": "Rust",
     "environment_url": "127.0.0.1:9876",
     "wandb_project": "ConPoLe",
     "resume": "must",
     "gpus": [0],
     "n_runs": 1,
-    "agents": [
+    "agent":
         {
             "type": "NCE",
             "name": "ConPoLe",
@@ -39,8 +39,7 @@
                 "mlp": true,
                 "lstm_layers": 2
             }
-        }
-    ],
+        },
     "eval_environment": {
         "evaluate_every": 100000,
         "eval_config": {
