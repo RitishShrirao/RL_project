@@ -1,0 +1,63 @@
+{
+    "experiment_id": "ppo-eq-hard-similar-abs",
+    "domain": "equations-hard",
+    "environment_backend": "Rust",
+    "wandb_project": "ConPoLe",
+    "resume": "allow",
+    "gpus": [0],
+    "n_runs": 1,
+    "iterations": 3,
+    "compression": {
+        "compressor": "ppo",
+        "abs_type": "ax_seq",
+        "iter": 500000,
+        "num_abs_sol": 5000,
+        "max_arity": 2
+
+    },
+    "agent":
+        {
+            "type": "NCE",
+            "name": "ConPoLe_Abstract",
+            "num_store_sol": 5000,
+            "n_future_states": 1,
+            "replay_buffer_size": 100000,
+            "max_depth": 30,
+            "beam_size": 10,
+            "initial_depth": 15,
+            "depth_step": 1,
+            "optimize_every": 32,
+            "n_gradient_steps": 256,
+            "keep_optimizer": true,
+            "step_every": 10000,
+            "n_bootstrap_problems": 100,
+            "bootstrap_from": "InverseLength",
+            "batch_size": 64,
+
+            "use_global_buffer": true,
+            "global_buffer_size": 1000000,
+            "use_embedding_based_sampling": true,
+            "num_candidate_negatives": 10000,
+            "num_final_negatives": 128,
+            "similarity_to_current": false,
+
+            "q_function": {
+                "type": "Bilinear",
+                "char_emb_dim": 64,
+                "hidden_dim": 256,
+                "mlp": true,
+                "lstm_layers": 2
+            }
+        }
+    ,
+    "eval_environment": {
+        "evaluate_every": 100000,
+        "eval_config": {
+            "max_steps": 30,
+            "n_problems": 200
+        },
+        "output_root": "output",
+        "max_steps": 3000000,
+        "print_every": 10000
+    }
+}
