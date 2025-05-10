@@ -103,14 +103,14 @@ In this abstraction project, we will always be focusing on the `equations-hard` 
 ```json
 {
     "experiment_id": "eq-hard-similar-sampling",
-    "domains": ["equations-hard"],
+    "domain": "equations-hard",
     "environment_backend": "Rust",
     "environment_url": "127.0.0.1:9876",
     "wandb_project": "ConPoLe",
     "resume": "must",
     "gpus": [0],
     "n_runs": 1,
-    "agents": [
+    "agent":
         {
             "type": "NCE",
             "name": "ConPoLe",
@@ -127,14 +127,14 @@ In this abstraction project, we will always be focusing on the `equations-hard` 
             "n_bootstrap_problems": 100,
             "bootstrap_from": "InverseLength",
             "batch_size": 64,
-            
+
             "use_global_buffer": true,
             "global_buffer_size": 1000000,
             "use_embedding_based_sampling": true,
             "num_candidate_negatives": 10000,
             "num_final_negatives": 128,
             "similarity_to_current": false,
-            
+
             "q_function": {
                 "type": "Bilinear",
                 "char_emb_dim": 64,
@@ -142,8 +142,7 @@ In this abstraction project, we will always be focusing on the `equations-hard` 
                 "mlp": true,
                 "lstm_layers": 2
             }
-        }
-    ],
+        },
     "eval_environment": {
         "evaluate_every": 100000,
         "eval_config": {
