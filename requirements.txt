@@ -10,3 +10,6 @@ pytorch_lightning
 GPUtil
 altair
 pymongo
+gym
+stable-baselines3
+shimmy
