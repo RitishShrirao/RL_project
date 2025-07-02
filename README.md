@@ -229,3 +229,4 @@ For finding abstractions using PPO, use compressor: "ppo" in the below config. (
     }
 }
 ```
+More details can be found in this [report](https://github.com/RitishShrirao/RL_project/blob/main/rl.pdf).
